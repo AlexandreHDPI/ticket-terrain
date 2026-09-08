@@ -405,7 +405,7 @@ def maybe_send_friday_reminder(force=False):
     if not force:
         if now_paris.weekday() != 4:  # 4 = vendredi
             return {"skipped": "not_friday"}
-        if not (now_paris.hour == 8 and 30 <= now_paris.minute < 45):
+        if not (now_paris.hour == 8 and 25 <= now_paris.minute < 50):
             return {"skipped": "outside_window"}
 
     today_str = now_paris.date().isoformat()
