@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -5,6 +7,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from functools import wraps
+from zoneinfo import ZoneInfo
 
 from flask import (
     Flask, request, jsonify, render_template, redirect,
@@ -13,6 +16,13 @@ from flask import (
 from werkzeug.utils import secure_filename
 
 import config
+
+try:
+    from pywebpush import webpush, WebPushException
+except ImportError:  # pragma: no cover - garde-fou si le paquet manque en local
+    webpush = None
+    class WebPushException(Exception):
+        pass
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -50,6 +60,18 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", config.ADMIN_USERNAME)
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", config.ADMIN_PASSWORD)
+
+# ---------------------------------------------------------------------------
+# Notifications push (rappel hebdomadaire du vendredi matin). Clés VAPID
+# générées une fois puis stockées en variables d'environnement sur Render.
+# Sans ces variables, les endpoints push répondent simplement "non configuré"
+# sans jamais faire planter le reste de l'application.
+# ---------------------------------------------------------------------------
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
+VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY")
+VAPID_CONTACT_EMAIL = os.environ.get("VAPID_CONTACT_EMAIL", "mailto:alexandre@hdpi.fr")
+CRON_SECRET = os.environ.get("CRON_SECRET")
+PARIS_TZ = ZoneInfo("Europe/Paris")
 
 # ---------------------------------------------------------------------------
 # Anti-brute-force simple sur la connexion admin : blocage temporaire par IP
@@ -140,6 +162,26 @@ def init_db():
                 cur.execute(stmt)
             except Exception:
                 conn.rollback()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id TEXT PRIMARY KEY,
+                technicien TEXT,
+                endpoint TEXT UNIQUE NOT NULL,
+                p256dh TEXT NOT NULL,
+                auth TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_state (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
         conn.commit()
         cur.close()
     else:
@@ -178,6 +220,26 @@ def init_db():
             conn.execute("ALTER TABLE tickets ADD COLUMN location_label TEXT")
         if "card_last4" not in existing_cols:
             conn.execute("ALTER TABLE tickets ADD COLUMN card_last4 TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id TEXT PRIMARY KEY,
+                technicien TEXT,
+                endpoint TEXT UNIQUE NOT NULL,
+                p256dh TEXT NOT NULL,
+                auth TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_state (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
         conn.commit()
     conn.close()
 
@@ -243,6 +305,124 @@ def parse_coord(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Notifications push : abonnements des technicien·nes + rappel automatique
+# du vendredi matin (« pensez à rentrer vos tickets »).
+# ---------------------------------------------------------------------------
+
+def _get_app_state(conn, key):
+    if USE_PG:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM app_state WHERE key = %s", (key,))
+        row = cur.fetchone()
+        cur.close()
+        return row[0] if row else None
+    row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def _set_app_state(conn, key, value):
+    if USE_PG:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (key, value),
+        )
+        conn.commit()
+        cur.close()
+    else:
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        conn.commit()
+
+
+def _remove_push_subscription(conn, endpoint):
+    if USE_PG:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM push_subscriptions WHERE endpoint = %s", (endpoint,))
+        conn.commit()
+        cur.close()
+    else:
+        conn.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+        conn.commit()
+
+
+def send_push_notification(title, body):
+    """Envoie une notification push à tous les technicien·nes abonné·es.
+    Retire automatiquement les abonnements devenus invalides (404/410,
+    ex. application désinstallée ou notifications désactivées)."""
+    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY or webpush is None:
+        return {"sent": 0, "removed": 0, "total": 0, "error": "push_non_configure"}
+
+    conn = get_conn()
+    if USE_PG:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM push_subscriptions")
+        subs = cur.fetchall()
+        cur.close()
+    else:
+        subs = conn.execute("SELECT * FROM push_subscriptions").fetchall()
+
+    sent, removed = 0, 0
+    payload = json.dumps({"title": title, "body": body})
+    for s in subs:
+        subscription_info = {
+            "endpoint": s["endpoint"],
+            "keys": {"p256dh": s["p256dh"], "auth": s["auth"]},
+        }
+        try:
+            webpush(
+                subscription_info=subscription_info,
+                data=payload,
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": VAPID_CONTACT_EMAIL},
+            )
+            sent += 1
+        except WebPushException as exc:
+            status = getattr(exc.response, "status_code", None) if getattr(exc, "response", None) is not None else None
+            if status in (404, 410):
+                removed += 1
+                _remove_push_subscription(conn, s["endpoint"])
+        except Exception:
+            pass  # un abonné en erreur ne doit jamais bloquer les autres envois
+
+    conn.close()
+    return {"sent": sent, "removed": removed, "total": len(subs)}
+
+
+def maybe_send_friday_reminder(force=False):
+    """Envoie le rappel du vendredi matin (8h30, heure de Paris) si on est
+    dans la bonne fenêtre et qu'il n'a pas déjà été envoyé aujourd'hui.
+    Utilise l'heure locale réelle de Paris (via zoneinfo) plutôt qu'un
+    horaire UTC fixe : reste juste même lors des changements d'heure."""
+    now_paris = datetime.now(PARIS_TZ)
+    if not force:
+        if now_paris.weekday() != 4:  # 4 = vendredi
+            return {"skipped": "not_friday"}
+        if not (now_paris.hour == 8 and 30 <= now_paris.minute < 45):
+            return {"skipped": "outside_window"}
+
+    today_str = now_paris.date().isoformat()
+    conn = get_conn()
+    if not force:
+        last_sent = _get_app_state(conn, "last_friday_reminder")
+        if last_sent == today_str:
+            conn.close()
+            return {"skipped": "already_sent_today"}
+    _set_app_state(conn, "last_friday_reminder", today_str)
+    conn.close()
+
+    result = send_push_notification(
+        "Rappel HDPI — Tickets Terrain",
+        "N'oubliez pas de rentrer vos tickets de frais de la semaine !",
+    )
+    return {"triggered_at": now_paris.isoformat(), **result}
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +683,85 @@ def list_technicians():
         names = [r["technicien"] for r in rows]
     conn.close()
     return jsonify([n for n in names if n])
+
+
+@app.route("/api/push/vapid-public-key")
+def push_vapid_public_key():
+    return jsonify({"publicKey": VAPID_PUBLIC_KEY or ""})
+
+
+@app.route("/api/push/subscribe", methods=["POST"])
+def push_subscribe():
+    data = request.get_json(force=True, silent=True) or {}
+    sub = data.get("subscription") or {}
+    endpoint = sub.get("endpoint")
+    keys = sub.get("keys") or {}
+    p256dh = keys.get("p256dh")
+    auth = keys.get("auth")
+    technicien = (data.get("technicien") or "").strip() or None
+    if not endpoint or not p256dh or not auth:
+        return jsonify({"error": "Abonnement invalide."}), 400
+
+    sub_id = hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
+    created_at = datetime.now(timezone.utc).isoformat()
+    conn = get_conn()
+    if USE_PG:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO push_subscriptions (id, technicien, endpoint, p256dh, auth, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (endpoint) DO UPDATE SET technicien = EXCLUDED.technicien, "
+            "p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth",
+            (sub_id, technicien, endpoint, p256dh, auth, created_at),
+        )
+        conn.commit()
+        cur.close()
+    else:
+        conn.execute(
+            "INSERT INTO push_subscriptions (id, technicien, endpoint, p256dh, auth, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(endpoint) DO UPDATE SET technicien = excluded.technicien, "
+            "p256dh = excluded.p256dh, auth = excluded.auth",
+            (sub_id, technicien, endpoint, p256dh, auth, created_at),
+        )
+        conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/push/unsubscribe", methods=["POST"])
+def push_unsubscribe():
+    data = request.get_json(force=True, silent=True) or {}
+    endpoint = data.get("endpoint")
+    if not endpoint:
+        return jsonify({"error": "endpoint manquant."}), 400
+    conn = get_conn()
+    _remove_push_subscription(conn, endpoint)
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/push/cron-trigger", methods=["POST"])
+def push_cron_trigger():
+    """Appelé par la tâche planifiée Render chaque vendredi matin. Protégé
+    par un secret partagé (jamais par la session admin, ce n'est pas un
+    navigateur qui appelle cette route)."""
+    if not CRON_SECRET or request.headers.get("X-Cron-Secret") != CRON_SECRET:
+        return jsonify({"error": "unauthorized"}), 401
+    result = maybe_send_friday_reminder()
+    return jsonify(result)
+
+
+@app.route("/api/admin/push/test", methods=["POST"])
+@login_required
+def push_admin_test():
+    """Permet à l'admin d'envoyer un rappel de test à tous les abonnés,
+    pour vérifier que tout fonctionne sans attendre vendredi."""
+    result = send_push_notification(
+        "Test — Tickets Terrain",
+        "Ceci est une notification de test envoyée depuis l'espace admin.",
+    )
+    return jsonify(result)
 
 
 @app.route("/photos/<ticket_id>")

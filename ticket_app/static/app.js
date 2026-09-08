@@ -272,9 +272,102 @@
   }
 
   window.addEventListener("online", function(){ flushOfflineQueue(); });
+  var swRegistration = null;
   if("serviceWorker" in navigator){
-    navigator.serviceWorker.register("/sw.js").catch(function(){});
+    navigator.serviceWorker.register("/sw.js")
+      .then(function(reg){ swRegistration = reg; refreshNotifRow(); })
+      .catch(function(){});
   }
+
+  // ---------- notifications push (rappel du vendredi matin) ----------
+  function urlBase64ToUint8Array(base64String){
+    var padding = "=".repeat((4 - base64String.length % 4) % 4);
+    var base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+    var raw = atob(base64);
+    var out = new Uint8Array(raw.length);
+    for(var i = 0; i < raw.length; i++){ out[i] = raw.charCodeAt(i); }
+    return out;
+  }
+
+  function pushSupported(){
+    return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  }
+
+  function refreshNotifRow(){
+    var row = $("notifRow");
+    var text = $("notifStatusText");
+    var btn = $("notifToggleBtn");
+    if(!pushSupported() || !swRegistration){
+      row.style.display = "none";
+      return;
+    }
+    row.style.display = "flex";
+    if(Notification.permission === "denied"){
+      row.className = "notif-row off";
+      text.textContent = "🔕 Notifications bloquées (autorisez-les dans les réglages du navigateur)";
+      btn.style.display = "none";
+      return;
+    }
+    btn.style.display = "";
+    swRegistration.pushManager.getSubscription().then(function(sub){
+      if(sub){
+        row.className = "notif-row ok";
+        text.textContent = "🔔 Rappel du vendredi matin activé";
+        btn.textContent = "Désactiver";
+      } else {
+        row.className = "notif-row off";
+        text.textContent = "🔔 Rappel le vendredi matin pour rentrer vos tickets";
+        btn.textContent = "Activer";
+      }
+    });
+  }
+
+  function subscribeToPush(){
+    Notification.requestPermission().then(function(perm){
+      if(perm !== "granted"){ refreshNotifRow(); return; }
+      fetch("/api/push/vapid-public-key")
+        .then(function(res){ return res.json(); })
+        .then(function(data){
+          if(!data.publicKey){
+            showToast("Notifications indisponibles pour le moment");
+            return;
+          }
+          return swRegistration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(data.publicKey),
+          }).then(function(sub){
+            return fetch("/api/push/subscribe", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ technicien: techName, subscription: sub.toJSON() }),
+            });
+          });
+        })
+        .then(function(){ showToast("Rappels activés"); refreshNotifRow(); })
+        .catch(function(){ showToast("Impossible d'activer les rappels"); refreshNotifRow(); });
+    });
+  }
+
+  function unsubscribeFromPush(){
+    swRegistration.pushManager.getSubscription().then(function(sub){
+      if(!sub){ refreshNotifRow(); return; }
+      var endpoint = sub.endpoint;
+      sub.unsubscribe().then(function(){
+        return fetch("/api/push/unsubscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint: endpoint }),
+        });
+      }).then(function(){ showToast("Rappels désactivés"); refreshNotifRow(); });
+    });
+  }
+
+  $("notifToggleBtn").addEventListener("click", function(){
+    if(!swRegistration) return;
+    swRegistration.pushManager.getSubscription().then(function(sub){
+      if(sub){ unsubscribeFromPush(); } else { subscribeToPush(); }
+    });
+  });
 
   // ---------- thème clair / sombre ----------
   function updateThemeIcon(){

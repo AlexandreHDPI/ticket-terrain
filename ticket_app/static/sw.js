@@ -32,6 +32,36 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
+// Notifications push (rappel hebdomadaire, etc.). Le serveur envoie un
+// payload JSON {title, body} ; on affiche une notification système classique.
+self.addEventListener("push", (event) => {
+  let data = { title: "Tickets Terrain — HDPI", body: "Vous avez une notification." };
+  if (event.data) {
+    try { data = { ...data, ...event.data.json() }; }
+    catch (e) { data.body = event.data.text() || data.body; }
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: "/static/icons/icon-192.png",
+      badge: "/static/icons/favicon-32.png",
+      tag: "tickets-hdpi-reminder",
+      renotify: true,
+    })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientsArr) => {
+      const existing = clientsArr.find((c) => "focus" in c);
+      if (existing) return existing.focus();
+      return self.clients.openWindow("/");
+    })
+  );
+});
+
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return; // les envois de tickets (POST/PUT/DELETE) passent tels quels
