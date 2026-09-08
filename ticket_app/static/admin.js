@@ -152,6 +152,15 @@
       top.innerHTML += '<span class="pending-badge">' + escapeHtml(t.categorie || "Justificatif") + ' en attente</span>';
     }
     main.appendChild(top);
+    if(t.lat != null && t.lng != null){
+      var locA = document.createElement("a");
+      locA.className = "location-badge";
+      locA.href = "https://www.openstreetmap.org/?mlat=" + t.lat + "&mlon=" + t.lng + "#map=16/" + t.lat + "/" + t.lng;
+      locA.target = "_blank";
+      locA.rel = "noopener";
+      locA.textContent = "📍 " + (t.location_label || "Voir sur la carte");
+      main.appendChild(locA);
+    }
     if(t.note){
       var note = document.createElement("div");
       note.className = "ticket-note";
@@ -365,9 +374,122 @@
     list.innerHTML = "";
     if(filtered.length === 0){
       list.innerHTML = '<div class="empty-state">Aucun ticket ne correspond à ce filtre.</div>';
+    } else {
+      filtered.forEach(function(t){ list.appendChild(ticketCard(t)); });
+    }
+
+    if($("techView").style.display !== "none"){
+      renderTechGrid();
+    }
+  }
+
+  // ---------- bascule vue globale / par technicien ----------
+  $("viewGlobalBtn").addEventListener("click", function(){
+    $("viewGlobalBtn").classList.add("active");
+    $("viewTechBtn").classList.remove("active");
+    $("globalView").style.display = "";
+    $("techView").style.display = "none";
+  });
+  $("viewTechBtn").addEventListener("click", function(){
+    $("viewTechBtn").classList.add("active");
+    $("viewGlobalBtn").classList.remove("active");
+    $("techView").style.display = "";
+    $("globalView").style.display = "none";
+    renderTechGrid();
+  });
+
+  function techSummaries(){
+    var byTech = {};
+    allTickets.forEach(function(t){
+      var key = (t.technicien || "?").trim().toLowerCase();
+      if(!byTech[key]){
+        byTech[key] = { key: key, label: (t.technicien || "?").trim(), count: 0, sumEnAttente: 0, sumValide: 0, sumRejete: 0, total: 0 };
+      }
+      var s = byTech[key];
+      s.count++;
+      s.total += (t.montant || 0);
+      if(t.status === "en_attente") s.sumEnAttente += (t.montant || 0);
+      else if(t.status === "valide") s.sumValide += (t.montant || 0);
+      else if(t.status === "rejete") s.sumRejete += (t.montant || 0);
+    });
+    return Object.keys(byTech).map(function(k){ return byTech[k]; }).sort(function(a,b){ return b.count - a.count; });
+  }
+
+  function renderTechGrid(){
+    var grid = $("techGrid");
+    grid.innerHTML = "";
+    var summaries = techSummaries();
+    if(summaries.length === 0){
+      grid.innerHTML = '<div class="empty-state">Aucun ticket enregistré pour l\'instant.</div>';
       return;
     }
-    filtered.forEach(function(t){ list.appendChild(ticketCard(t)); });
+    summaries.forEach(function(s){
+      var card = document.createElement("button");
+      card.type = "button";
+      card.className = "tech-card";
+      card.innerHTML =
+        '<div class="tech-name">' + escapeHtml(s.label) + '</div>' +
+        '<div class="tech-metrics">' +
+          '<div>' + s.count + ' ticket(s) · <b>' + eur(s.total) + '</b> au total</div>' +
+          '<div>En attente : <b>' + eur(s.sumEnAttente) + '</b></div>' +
+          '<div>Validé : <b>' + eur(s.sumValide) + '</b></div>' +
+        '</div>';
+      card.addEventListener("click", function(){ openTechDetail(s.key, s.label); });
+      grid.appendChild(card);
+    });
+  }
+
+  function openTechDetail(key, label){
+    var tickets = allTickets.filter(function(t){ return (t.technicien || "?").trim().toLowerCase() === key; });
+    $("techDetailName").textContent = label;
+
+    var enAttente = tickets.filter(function(t){ return t.status === "en_attente"; });
+    var valide = tickets.filter(function(t){ return t.status === "valide"; });
+    var rejete = tickets.filter(function(t){ return t.status === "rejete"; });
+    var stats = $("techDetailStats");
+    stats.innerHTML = "";
+    stats.appendChild(statTile("Tickets", String(tickets.length), "", "accent"));
+    stats.appendChild(statTile("En attente", eur(enAttente.reduce(function(s,t){return s+(t.montant||0);},0)), enAttente.length + " ticket(s)", "warn"));
+    stats.appendChild(statTile("Validé", eur(valide.reduce(function(s,t){return s+(t.montant||0);},0)), valide.length + " ticket(s)", "ok"));
+    stats.appendChild(statTile("Rejeté", String(rejete.length), "ticket(s)", "bad"));
+
+    var byMonth = {};
+    tickets.forEach(function(t){
+      var m = (t.date || "").slice(0,7);
+      if(!m) return;
+      byMonth[m] = (byMonth[m] || 0) + (t.montant || 0);
+    });
+    var months = Object.keys(byMonth).sort().slice(-6);
+    var maxVal = Math.max.apply(null, months.map(function(m){ return byMonth[m]; }).concat([0.01]));
+    var barsEl = $("techMonthBars");
+    barsEl.innerHTML = "";
+    if(months.length === 0){
+      barsEl.innerHTML = '<div class="empty-state">Pas encore de données.</div>';
+    } else {
+      months.forEach(function(m){
+        var row = document.createElement("div");
+        row.className = "month-bar-row";
+        var pct = Math.max(4, Math.round((byMonth[m] / maxVal) * 100));
+        row.innerHTML =
+          '<span class="month-label">' + monthLabel(m) + '</span>' +
+          '<span class="month-bar-track"><span class="month-bar-fill" style="width:' + pct + '%"></span></span>' +
+          '<span class="month-value">' + eur(byMonth[m]) + '</span>';
+        barsEl.appendChild(row);
+      });
+    }
+
+    var list = $("techDetailList");
+    list.innerHTML = "";
+    tickets.forEach(function(t){ list.appendChild(ticketCard(t)); });
+
+    $("techDetailDialog").showModal();
+  }
+
+  function monthLabel(m){
+    var parts = m.split("-");
+    var names = ["Jan","Fév","Mar","Avr","Mai","Juin","Juil","Août","Sep","Oct","Nov","Déc"];
+    var idx = parseInt(parts[1], 10) - 1;
+    return (names[idx] || m) + " " + parts[0];
   }
 
   $("statusFilter").addEventListener("change", render);

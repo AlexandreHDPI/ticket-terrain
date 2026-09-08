@@ -5,6 +5,65 @@
   var editingTicketId = null;
   var deleteTargetId = null;
   var myTickets = [];
+  var capturedLat = null, capturedLng = null, capturedLabel = null;
+  var geoToken = 0;
+
+  // ---------- localisation (uniquement à la création d'un ticket) ----------
+  function setLocationStatus(text, cls){
+    var el = $("locationStatusText");
+    var row = $("locationRow");
+    if(!el || !row) return;
+    el.textContent = text;
+    row.classList.remove("ok", "off");
+    if(cls) row.classList.add(cls);
+  }
+
+  function reverseGeocode(lat, lng, token){
+    var url = "https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=" + lat + "&lon=" + lng + "&zoom=14&accept-language=fr";
+    fetch(url, { headers: { "Accept": "application/json" } })
+      .then(function(res){ return res.ok ? res.json() : null; })
+      .then(function(data){
+        if(token !== geoToken) return;
+        var a = data && data.address;
+        var place = a && (a.village || a.town || a.city || a.municipality || a.county);
+        var road = a && a.road;
+        var label = [road, place].filter(Boolean).join(", ") || place;
+        if(label){
+          capturedLabel = label;
+          setLocationStatus("📍 " + label, "ok");
+        } else {
+          setLocationStatus("📍 Position enregistrée", "ok");
+        }
+      })
+      .catch(function(){
+        if(token !== geoToken) return;
+        setLocationStatus("📍 Position enregistrée", "ok");
+      });
+  }
+
+  function requestLocation(){
+    capturedLat = null; capturedLng = null; capturedLabel = null;
+    var token = ++geoToken;
+    if(!("geolocation" in navigator)){
+      setLocationStatus("📍 Localisation non disponible sur cet appareil", "off");
+      return;
+    }
+    setLocationStatus("📍 Détection de la position…", "off");
+    navigator.geolocation.getCurrentPosition(
+      function(pos){
+        if(token !== geoToken) return;
+        capturedLat = pos.coords.latitude;
+        capturedLng = pos.coords.longitude;
+        setLocationStatus("📍 Position enregistrée", "ok");
+        reverseGeocode(capturedLat, capturedLng, token);
+      },
+      function(){
+        if(token !== geoToken) return;
+        setLocationStatus("📍 Localisation refusée ou indisponible (le ticket sera quand même enregistré)", "off");
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 }
+    );
+  }
 
   // ---------- thème clair / sombre ----------
   function updateThemeIcon(){
@@ -83,6 +142,8 @@
     $("submitTicketBtn").disabled = false;
     $("submitTicketBtn").textContent = "Enregistrer";
     document.querySelector("#captureDialog .dialog-head h2").textContent = "Nouveau ticket";
+    $("locationRow").style.display = "";
+    requestLocation();
     $("captureDialog").showModal();
   }
 
@@ -102,6 +163,9 @@
     $("submitTicketBtn").disabled = false;
     $("submitTicketBtn").textContent = "Enregistrer les modifications";
     document.querySelector("#captureDialog .dialog-head h2").textContent = "Modifier le ticket";
+    geoToken++; // annule une détection de position en cours
+    capturedLat = null; capturedLng = null; capturedLabel = null;
+    $("locationRow").style.display = "none";
     $("captureDialog").showModal();
   }
 
@@ -191,6 +255,11 @@
     if(pendingBlob){
       fd.append("photo", pendingBlob, "ticket.jpg");
     }
+    if(!editingTicketId && capturedLat != null && capturedLng != null){
+      fd.append("lat", capturedLat);
+      fd.append("lng", capturedLng);
+      if(capturedLabel) fd.append("location_label", capturedLabel);
+    }
 
     var isEdit = !!editingTicketId;
     var url = isEdit ? "/api/tickets/" + editingTicketId : "/api/tickets";
@@ -279,6 +348,15 @@
       top.innerHTML += '<span class="pending-badge">' + escapeHtml(t.categorie || "Justificatif") + ' en attente</span>';
     }
     main.appendChild(top);
+    if(t.lat != null && t.lng != null){
+      var locA = document.createElement("a");
+      locA.className = "location-badge";
+      locA.href = "https://www.openstreetmap.org/?mlat=" + t.lat + "&mlon=" + t.lng + "#map=16/" + t.lat + "/" + t.lng;
+      locA.target = "_blank";
+      locA.rel = "noopener";
+      locA.textContent = "📍 " + (t.location_label || "Voir sur la carte");
+      main.appendChild(locA);
+    }
     if(t.note){
       var note = document.createElement("div");
       note.className = "ticket-note";

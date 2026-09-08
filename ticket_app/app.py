@@ -115,7 +115,10 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'en_attente',
                 admin_note TEXT,
                 created_at TEXT NOT NULL,
-                updated_at TEXT
+                updated_at TEXT,
+                lat DOUBLE PRECISION,
+                lng DOUBLE PRECISION,
+                location_label TEXT
             )
             """
         )
@@ -125,6 +128,9 @@ def init_db():
             "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS updated_at TEXT",
             "ALTER TABLE tickets ALTER COLUMN photo_data DROP NOT NULL",
             "ALTER TABLE tickets ALTER COLUMN photo_mime DROP NOT NULL",
+            "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION",
+            "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION",
+            "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS location_label TEXT",
         ):
             try:
                 cur.execute(stmt)
@@ -147,7 +153,10 @@ def init_db():
                 status TEXT NOT NULL DEFAULT 'en_attente',
                 admin_note TEXT,
                 created_at TEXT NOT NULL,
-                updated_at TEXT
+                updated_at TEXT,
+                lat REAL,
+                lng REAL,
+                location_label TEXT
             )
             """
         )
@@ -156,6 +165,12 @@ def init_db():
             conn.execute("ALTER TABLE tickets ADD COLUMN pending_receipt INTEGER NOT NULL DEFAULT 0")
         if "updated_at" not in existing_cols:
             conn.execute("ALTER TABLE tickets ADD COLUMN updated_at TEXT")
+        if "lat" not in existing_cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN lat REAL")
+        if "lng" not in existing_cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN lng REAL")
+        if "location_label" not in existing_cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN location_label TEXT")
         conn.commit()
     conn.close()
 
@@ -178,6 +193,8 @@ def allowed_file(filename):
 
 def row_to_dict(r):
     has_photo = bool(r["photo_data"]) if USE_PG else bool(r["photo_filename"])
+    lat = r["lat"] if "lat" in r.keys() else None
+    lng = r["lng"] if "lng" in r.keys() else None
     return {
         "id": r["id"],
         "technicien": r["technicien"],
@@ -191,6 +208,9 @@ def row_to_dict(r):
         "admin_note": r["admin_note"],
         "created_at": r["created_at"],
         "updated_at": r["updated_at"],
+        "lat": float(lat) if lat is not None else None,
+        "lng": float(lng) if lng is not None else None,
+        "location_label": r["location_label"] if "location_label" in r.keys() else None,
     }
 
 
@@ -206,6 +226,15 @@ def get_ticket_row(conn, ticket_id):
 
 def parse_bool(value):
     return str(value).strip().lower() in ("1", "true", "on", "yes")
+
+
+def parse_coord(value):
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +254,9 @@ def create_ticket():
     categorie = request.form.get("categorie")
     note = (request.form.get("note") or "").strip()
     pending_receipt = parse_bool(request.form.get("pending_receipt"))
+    lat = parse_coord(request.form.get("lat"))
+    lng = parse_coord(request.form.get("lng"))
+    location_label = (request.form.get("location_label") or "").strip() or None
     photo = request.files.get("photo")
     has_photo = bool(photo and photo.filename)
 
@@ -258,10 +290,10 @@ def create_ticket():
         cur.execute(
             "INSERT INTO tickets "
             "(id, technicien, montant, date, categorie, note, photo_data, photo_mime, "
-            "pending_receipt, status, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'en_attente', %s)",
+            "pending_receipt, status, created_at, lat, lng, location_label) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'en_attente', %s, %s, %s, %s)",
             (ticket_id, technicien, montant, date, categorie, note,
-             photo_bytes, mime, pending_receipt, created_at),
+             photo_bytes, mime, pending_receipt, created_at, lat, lng, location_label),
         )
         conn.commit()
         cur.close()
@@ -274,10 +306,10 @@ def create_ticket():
         conn.execute(
             "INSERT INTO tickets "
             "(id, technicien, montant, date, categorie, note, photo_filename, "
-            "pending_receipt, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'en_attente', ?)",
+            "pending_receipt, status, created_at, lat, lng, location_label) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'en_attente', ?, ?, ?, ?)",
             (ticket_id, technicien, montant, date, categorie, note, filename,
-             1 if pending_receipt else 0, created_at),
+             1 if pending_receipt else 0, created_at, lat, lng, location_label),
         )
         conn.commit()
     conn.close()
@@ -420,7 +452,7 @@ def list_my_tickets():
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             "SELECT id, technicien, montant, date, categorie, note, photo_data, "
-            "pending_receipt, status, admin_note, created_at, updated_at "
+            "pending_receipt, status, admin_note, created_at, updated_at, lat, lng, location_label "
             "FROM tickets WHERE lower(technicien) = lower(%s) ORDER BY created_at DESC",
             (technicien,),
         )
@@ -514,7 +546,7 @@ def list_all_tickets():
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             "SELECT id, technicien, montant, date, categorie, note, photo_data, "
-            "pending_receipt, status, admin_note, created_at, updated_at "
+            "pending_receipt, status, admin_note, created_at, updated_at, lat, lng, location_label "
             "FROM tickets ORDER BY created_at DESC"
         )
         rows = cur.fetchall()
