@@ -246,6 +246,14 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/sw.js")
+def service_worker():
+    resp = send_from_directory(os.path.join(BASE_DIR, "static"), "sw.js")
+    resp.headers["Service-Worker-Allowed"] = "/"
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 @app.route("/api/tickets", methods=["POST"])
 def create_ticket():
     technicien = (request.form.get("technicien") or "").strip()

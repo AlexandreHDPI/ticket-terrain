@@ -40,6 +40,8 @@
 
     <button class="capture-cta" id="newTicketBtn"><span class="icon">📷</span> Nouveau ticket</button>
 
+    <div class="offline-banner" id="offlineBanner" style="display:none;"></div>
+
     <div class="stat-grid" id="techSummary"></div>
 
     <div>
@@ -59,6 +61,7 @@
       <span id="photoPickerContent"><span class="icon">📷</span><span>Prendre / choisir une photo du ticket</span></span>
       <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none;">
     </label>
+    <div class="ocr-status" id="ocrStatusText" style="display:none;"></div>
 
     <div class="field">
       <label for="montantInput">Montant</label>

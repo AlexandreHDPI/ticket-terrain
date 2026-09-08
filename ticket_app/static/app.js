@@ -7,6 +7,113 @@
   var myTickets = [];
   var capturedLat = null, capturedLng = null, capturedLabel = null;
   var geoToken = 0;
+  var userTouchedMontant = false;
+  var userTouchedCategorie = false;
+  var ocrToken = 0;
+  var tesseractLoadPromise = null;
+
+  // ---------- lecture automatique du ticket (OCR gratuit, dans le navigateur) ----------
+  function setOcrStatus(text, cls){
+    var el = $("ocrStatusText");
+    var row = $("ocrStatusText");
+    if(!el) return;
+    if(!text){ row.style.display = "none"; return; }
+    row.style.display = "";
+    el.textContent = text;
+    row.classList.remove("ok");
+    if(cls) row.classList.add(cls);
+  }
+
+  function loadTesseract(){
+    if(window.Tesseract) return Promise.resolve();
+    if(tesseractLoadPromise) return tesseractLoadPromise;
+    tesseractLoadPromise = new Promise(function(resolve, reject){
+      var s = document.createElement("script");
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js";
+      s.onload = function(){ resolve(); };
+      s.onerror = function(){ tesseractLoadPromise = null; reject(new Error("load failed")); };
+      document.head.appendChild(s);
+    });
+    return tesseractLoadPromise;
+  }
+
+  var CATEGORY_KEYWORDS = [
+    ["Péage", ["PEAGE", "PÉAGE", "AUTOROUTE", "APRR", "VINCI", "SANEF", "ASF"]],
+    ["Essence", ["ESSENCE", "CARBURANT", "GASOIL", "GAZOLE", "STATION", "TOTAL ENERGIES", "TOTALENERGIES", "SHELL", "ESSO", "BP ", "AVIA"]],
+    ["Repas", ["RESTAURANT", "BRASSERIE", "CAFE", "CAFÉ", "PIZZERIA", "BOULANGERIE", "MENU", "COUVERT"]],
+    ["Parking", ["PARKING", "STATIONNEMENT", "PARCMETRE", "PARC-METRE"]],
+    ["Hébergement", ["HOTEL", "HÔTEL", "NUITEE", "NUITÉE", "CHAMBRE", "IBIS", "B&B", "CAMPANILE"]]
+  ];
+
+  function detectCategoryFromText(text){
+    var upper = text.toUpperCase();
+    for(var i=0; i<CATEGORY_KEYWORDS.length; i++){
+      var cat = CATEGORY_KEYWORDS[i][0];
+      var keywords = CATEGORY_KEYWORDS[i][1];
+      for(var j=0; j<keywords.length; j++){
+        if(upper.indexOf(keywords[j]) !== -1) return cat;
+      }
+    }
+    return null;
+  }
+
+  function detectAmountFromText(text){
+    var lines = text.split(/\r?\n/);
+    var numberRe = /(\d{1,4})[.,](\d{2})\b/;
+    var totalKeywords = ["TOTAL", "MONTANT", "A PAYER", "À PAYER", "NET A PAYER", "TTC"];
+    var best = null;
+    // 1) chercher un nombre sur une ligne contenant un mot-clé de total
+    for(var i=0; i<lines.length; i++){
+      var upperLine = lines[i].toUpperCase();
+      var hasKeyword = totalKeywords.some(function(k){ return upperLine.indexOf(k) !== -1; });
+      if(hasKeyword){
+        var m = lines[i].match(numberRe);
+        if(m){
+          var val = parseFloat(m[1] + "." + m[2]);
+          if(val > 0 && val < 100000) return val;
+        }
+      }
+    }
+    // 2) sinon, prendre le plus grand montant trouvé dans tout le texte
+    var re = /(\d{1,4})[.,](\d{2})\b/g;
+    var match;
+    while((match = re.exec(text)) !== null){
+      var v = parseFloat(match[1] + "." + match[2]);
+      if(v > 0 && v < 100000 && (best === null || v > best)) best = v;
+    }
+    return best;
+  }
+
+  function runOcrAutofill(blob){
+    var token = ++ocrToken;
+    setOcrStatus("🔎 Lecture automatique du ticket…");
+    loadTesseract().then(function(){
+      if(token !== ocrToken) return;
+      return Tesseract.recognize(blob, "eng");
+    }).then(function(result){
+      if(!result || token !== ocrToken) return;
+      var text = result.data && result.data.text ? result.data.text : "";
+      var amount = detectAmountFromText(text);
+      var category = detectCategoryFromText(text);
+      var applied = [];
+      if(amount && !userTouchedMontant){
+        $("montantInput").value = amount.toFixed(2);
+        applied.push(amount.toFixed(2).replace(".", ",") + " €");
+      }
+      if(category && !userTouchedCategorie){
+        $("categorieInput").value = category;
+        applied.push(category);
+      }
+      if(applied.length){
+        setOcrStatus("🔎 Détecté automatiquement : " + applied.join(" · ") + " (vérifiez avant d'enregistrer)", "ok");
+      } else {
+        setOcrStatus("🔎 Rien détecté automatiquement — complétez les champs manuellement");
+      }
+    }).catch(function(){
+      if(token !== ocrToken) return;
+      setOcrStatus("🔎 Lecture automatique indisponible (hors-ligne ou erreur) — complétez manuellement");
+    });
+  }
 
   // ---------- localisation (uniquement à la création d'un ticket) ----------
   function setLocationStatus(text, cls){
@@ -63,6 +170,110 @@
       },
       { enableHighAccuracy: false, timeout: 8000, maximumAge: 300000 }
     );
+  }
+
+  // ---------- mode hors-ligne : file d'attente locale (IndexedDB) ----------
+  var IDB_NAME = "tt_offline_db";
+  var IDB_STORE = "queue";
+  var isSyncingQueue = false;
+
+  function openOfflineDb(){
+    return new Promise(function(resolve, reject){
+      if(!("indexedDB" in window)){ reject(new Error("no indexeddb")); return; }
+      var req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = function(){
+        req.result.createObjectStore(IDB_STORE, { keyPath: "localId" });
+      };
+      req.onsuccess = function(){ resolve(req.result); };
+      req.onerror = function(){ reject(req.error); };
+    });
+  }
+
+  function queueOfflineTicket(fields, blob){
+    return openOfflineDb().then(function(db){
+      return new Promise(function(resolve, reject){
+        var tx = db.transaction(IDB_STORE, "readwrite");
+        var localId = "local-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+        var record = { localId: localId, photoBlob: blob || null, queuedAt: new Date().toISOString() };
+        Object.keys(fields).forEach(function(k){ record[k] = fields[k]; });
+        tx.objectStore(IDB_STORE).add(record);
+        tx.oncomplete = function(){ resolve(localId); };
+        tx.onerror = function(){ reject(tx.error); };
+      });
+    }).catch(function(err){
+      showToast("Impossible d'enregistrer hors-ligne sur cet appareil");
+      throw err;
+    });
+  }
+
+  function getQueuedTickets(){
+    return openOfflineDb().then(function(db){
+      return new Promise(function(resolve, reject){
+        var tx = db.transaction(IDB_STORE, "readonly");
+        var req = tx.objectStore(IDB_STORE).getAll();
+        req.onsuccess = function(){ resolve(req.result || []); };
+        req.onerror = function(){ reject(req.error); };
+      });
+    }).catch(function(){ return []; });
+  }
+
+  function removeQueuedTicket(localId){
+    return openOfflineDb().then(function(db){
+      return new Promise(function(resolve){
+        var tx = db.transaction(IDB_STORE, "readwrite");
+        tx.objectStore(IDB_STORE).delete(localId);
+        tx.oncomplete = function(){ resolve(); };
+        tx.onerror = function(){ resolve(); };
+      });
+    }).catch(function(){});
+  }
+
+  function updateOfflineBanner(){
+    getQueuedTickets().then(function(items){
+      var banner = $("offlineBanner");
+      if(!banner) return;
+      if(items.length === 0){ banner.style.display = "none"; banner.innerHTML = ""; return; }
+      banner.style.display = "flex";
+      banner.innerHTML =
+        '<span>⏳ ' + items.length + ' ticket(s) en attente d\'envoi (pas de connexion)</span>' +
+        '<button type="button" class="btn-sm" id="retrySyncBtn">Réessayer</button>';
+      $("retrySyncBtn").addEventListener("click", function(){ flushOfflineQueue(); });
+    });
+  }
+
+  function flushOfflineQueue(){
+    if(isSyncingQueue || !navigator.onLine) return;
+    isSyncingQueue = true;
+    getQueuedTickets().then(function(items){
+      var i = 0;
+      function next(){
+        if(i >= items.length){
+          isSyncingQueue = false;
+          updateOfflineBanner();
+          loadMyTickets();
+          return;
+        }
+        var item = items[i++];
+        var fd = new FormData();
+        ["technicien", "montant", "date", "categorie", "note", "pending_receipt", "lat", "lng", "location_label"].forEach(function(k){
+          if(item[k] !== undefined && item[k] !== null) fd.append(k, item[k]);
+        });
+        if(item.photoBlob){ fd.append("photo", item.photoBlob, "ticket.jpg"); }
+        fetch("/api/tickets", { method: "POST", body: fd })
+          .then(function(res){
+            if(!res.ok) throw new Error("sync failed");
+            return removeQueuedTicket(item.localId);
+          })
+          .then(next)
+          .catch(function(){ isSyncingQueue = false; updateOfflineBanner(); });
+      }
+      next();
+    }).catch(function(){ isSyncingQueue = false; });
+  }
+
+  window.addEventListener("online", function(){ flushOfflineQueue(); });
+  if("serviceWorker" in navigator){
+    navigator.serviceWorker.register("/sw.js").catch(function(){});
   }
 
   // ---------- thème clair / sombre ----------
@@ -144,6 +355,10 @@
     document.querySelector("#captureDialog .dialog-head h2").textContent = "Nouveau ticket";
     $("locationRow").style.display = "";
     requestLocation();
+    userTouchedMontant = false;
+    userTouchedCategorie = false;
+    ocrToken++;
+    setOcrStatus("");
     $("captureDialog").showModal();
   }
 
@@ -166,6 +381,8 @@
     geoToken++; // annule une détection de position en cours
     capturedLat = null; capturedLng = null; capturedLabel = null;
     $("locationRow").style.display = "none";
+    ocrToken++; // pas de relecture automatique en modification
+    setOcrStatus("");
     $("captureDialog").showModal();
   }
 
@@ -222,10 +439,16 @@
       pendingBlob = blob;
       var url = URL.createObjectURL(blob);
       $("photoPickerContent").innerHTML = '<img src="' + url + '" alt="Aperçu du ticket">';
+      if(!editingTicketId){
+        runOcrAutofill(blob);
+      }
     }).catch(function(){
       $("photoPickerContent").innerHTML = '<span class="icon">📷</span><span>Échec de lecture — réessayez</span>';
     });
   });
+
+  $("montantInput").addEventListener("input", function(){ userTouchedMontant = true; });
+  $("categorieInput").addEventListener("change", function(){ userTouchedCategorie = true; });
 
   // ---------- submit (création ou modification) ----------
   $("ticketForm").addEventListener("submit", function(e){
@@ -264,6 +487,22 @@
     var isEdit = !!editingTicketId;
     var url = isEdit ? "/api/tickets/" + editingTicketId : "/api/tickets";
 
+    // Hors-ligne (nouveau ticket uniquement) : on ne tente même pas le réseau,
+    // on met directement en file d'attente locale.
+    if(!isEdit && !navigator.onLine){
+      queueOfflineTicket({
+        technicien: techName, montant: montant, date: date, categorie: categorie, note: note,
+        pending_receipt: pendingReceipt ? "1" : "0",
+        lat: capturedLat, lng: capturedLng, location_label: capturedLabel
+      }, pendingBlob).then(function(){
+        $("captureDialog").close();
+        showToast("Pas de connexion — ticket enregistré et prêt à être envoyé dès le retour du réseau");
+        renderTechView();
+        updateOfflineBanner();
+      });
+      return;
+    }
+
     $("submitTicketBtn").disabled = true;
     fetch(url, { method: isEdit ? "PUT" : "POST", body: fd })
       .then(function(res){
@@ -276,6 +515,20 @@
         loadMyTickets();
       })
       .catch(function(err){
+        if(!isEdit && err instanceof TypeError){
+          // Échec réseau (pas juste une erreur applicative) : on bascule en file d'attente locale.
+          queueOfflineTicket({
+            technicien: techName, montant: montant, date: date, categorie: categorie, note: note,
+            pending_receipt: pendingReceipt ? "1" : "0",
+            lat: capturedLat, lng: capturedLng, location_label: capturedLabel
+          }, pendingBlob).then(function(){
+            $("captureDialog").close();
+            showToast("Pas de connexion — ticket enregistré et prêt à être envoyé dès le retour du réseau");
+            renderTechView();
+            updateOfflineBanner();
+          });
+          return;
+        }
         showToast(err.message || "Échec de l'enregistrement");
         $("submitTicketBtn").disabled = false;
       });
@@ -410,6 +663,38 @@
     return d;
   }
 
+  function offlineTicketCard(item){
+    var card = document.createElement("div");
+    card.className = "ticket-card";
+    if(item.photoBlob){
+      var img = document.createElement("img");
+      img.className = "thumb";
+      img.src = URL.createObjectURL(item.photoBlob);
+      img.alt = "Ticket " + (item.categorie || "");
+      card.appendChild(img);
+    } else {
+      var ph = document.createElement("div");
+      ph.className = "thumb-placeholder";
+      ph.textContent = "🕒";
+      card.appendChild(ph);
+    }
+    var main = document.createElement("div");
+    main.className = "ticket-main";
+    main.innerHTML =
+      '<div class="ticket-top"><span class="ticket-cat">' + escapeHtml(item.categorie || "") + '</span>' +
+      '<span class="ticket-date mono">' + frDate(item.date) + '</span>' +
+      '<span class="sync-badge">⏳ En attente d\'envoi</span></div>';
+    card.appendChild(main);
+    var side = document.createElement("div");
+    side.className = "ticket-side";
+    var amt = document.createElement("div");
+    amt.className = "ticket-amount mono";
+    amt.textContent = eur(parseFloat(item.montant) || 0);
+    side.appendChild(amt);
+    card.appendChild(side);
+    return card;
+  }
+
   function renderTechView(){
     var enAttente = myTickets.filter(function(t){ return t.status === "en_attente"; });
     var valide = myTickets.filter(function(t){ return t.status === "valide"; });
@@ -422,16 +707,20 @@
     $("techSummary").appendChild(statTile("Validé", eur(sumValide), valide.length + " ticket(s)", "ok"));
 
     var list = $("techTicketList");
-    list.innerHTML = "";
     if(!techName){
       list.innerHTML = '<div class="empty-state">Indiquez votre nom pour voir vos tickets.</div>';
       return;
     }
-    if(myTickets.length === 0){
-      list.innerHTML = '<div class="empty-state">Aucun ticket pour l\'instant — appuyez sur « Nouveau ticket » pour photographier votre premier justificatif.</div>';
-      return;
-    }
-    myTickets.forEach(function(t){ list.appendChild(ticketCard(t)); });
+    getQueuedTickets().then(function(queued){
+      var mine = queued.filter(function(q){ return (q.technicien || "").trim().toLowerCase() === techName.toLowerCase(); });
+      list.innerHTML = "";
+      if(myTickets.length === 0 && mine.length === 0){
+        list.innerHTML = '<div class="empty-state">Aucun ticket pour l\'instant — appuyez sur « Nouveau ticket » pour photographier votre premier justificatif.</div>';
+        return;
+      }
+      mine.forEach(function(q){ list.appendChild(offlineTicketCard(q)); });
+      myTickets.forEach(function(t){ list.appendChild(ticketCard(t)); });
+    });
   }
 
   function loadMyTickets(){
@@ -444,5 +733,8 @@
 
   renderTechView();
   loadMyTickets();
+  updateOfflineBanner();
+  flushOfflineQueue();
   setInterval(loadMyTickets, 20000);
+  setInterval(flushOfflineQueue, 30000);
 })();
