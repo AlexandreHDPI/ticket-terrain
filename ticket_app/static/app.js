@@ -1,6 +1,9 @@
 (function(){
   var $ = function(id){ return document.getElementById(id); };
   var pendingBlob = null;
+  var keepExistingPhoto = false;
+  var editingTicketId = null;
+  var deleteTargetId = null;
   var myTickets = [];
 
   // ---------- thème clair / sombre ----------
@@ -27,6 +30,20 @@
     loadMyTickets();
   });
 
+  // ---------- suggestions de noms déjà utilisés ----------
+  fetch("/api/technicians")
+    .then(function(res){ return res.json(); })
+    .then(function(names){
+      var list = $("techNameList");
+      list.innerHTML = "";
+      (names || []).forEach(function(n){
+        var opt = document.createElement("option");
+        opt.value = n;
+        list.appendChild(opt);
+      });
+    })
+    .catch(function(){});
+
   // ---------- toast ----------
   var toastTimer = null;
   function showToast(msg){
@@ -49,16 +66,43 @@
       showToast("Indiquez votre nom d'abord");
       return;
     }
-    resetForm();
-    $("captureDialog").showModal();
+    openCreateForm();
   });
 
-  function resetForm(){
+  function defaultPhotoLabel(){
+    return '<span class="icon">📷</span><span>Prendre / choisir une photo du ticket</span>';
+  }
+
+  function openCreateForm(){
+    editingTicketId = null;
     $("ticketForm").reset();
     $("dateInput").value = new Date().toISOString().slice(0,10);
     pendingBlob = null;
-    $("photoPickerContent").innerHTML = '<span class="icon">📷</span><span>Prendre / choisir une photo du ticket</span>';
+    keepExistingPhoto = false;
+    $("photoPickerContent").innerHTML = defaultPhotoLabel();
     $("submitTicketBtn").disabled = false;
+    $("submitTicketBtn").textContent = "Enregistrer";
+    document.querySelector("#captureDialog .dialog-head h2").textContent = "Nouveau ticket";
+    $("captureDialog").showModal();
+  }
+
+  function openEditForm(t){
+    editingTicketId = t.id;
+    $("ticketForm").reset();
+    pendingBlob = null;
+    keepExistingPhoto = !!t.photo_url;
+    $("montantInput").value = t.montant;
+    $("dateInput").value = t.date;
+    $("categorieInput").value = t.categorie;
+    $("noteInput").value = t.note || "";
+    $("pendingReceiptInput").checked = !!t.pending_receipt;
+    $("photoPickerContent").innerHTML = t.photo_url
+      ? '<img src="' + t.photo_url + '" alt="Photo actuelle">'
+      : defaultPhotoLabel();
+    $("submitTicketBtn").disabled = false;
+    $("submitTicketBtn").textContent = "Enregistrer les modifications";
+    document.querySelector("#captureDialog .dialog-head h2").textContent = "Modifier le ticket";
+    $("captureDialog").showModal();
   }
 
   // ---------- photo compression ----------
@@ -108,6 +152,7 @@
   $("photoInput").addEventListener("change", function(){
     var file = $("photoInput").files[0];
     if(!file) return;
+    keepExistingPhoto = false;
     $("photoPickerContent").innerHTML = "<span>Compression de la photo…</span>";
     compressToBlob(file).then(function(blob){
       pendingBlob = blob;
@@ -118,11 +163,13 @@
     });
   });
 
-  // ---------- submit ----------
+  // ---------- submit (création ou modification) ----------
   $("ticketForm").addEventListener("submit", function(e){
     e.preventDefault();
-    if(!pendingBlob){
-      showToast("Ajoutez une photo du ticket");
+    var pendingReceipt = $("pendingReceiptInput").checked;
+    var hasPhoto = !!pendingBlob || keepExistingPhoto;
+    if(!hasPhoto && !pendingReceipt){
+      showToast("Ajoutez une photo, ou cochez « justificatif en attente »");
       return;
     }
     var montant = parseFloat($("montantInput").value);
@@ -140,22 +187,47 @@
     fd.append("date", date);
     fd.append("categorie", categorie);
     fd.append("note", note);
-    fd.append("photo", pendingBlob, "ticket.jpg");
+    fd.append("pending_receipt", pendingReceipt ? "1" : "0");
+    if(pendingBlob){
+      fd.append("photo", pendingBlob, "ticket.jpg");
+    }
+
+    var isEdit = !!editingTicketId;
+    var url = isEdit ? "/api/tickets/" + editingTicketId : "/api/tickets";
 
     $("submitTicketBtn").disabled = true;
-    fetch("/api/tickets", { method: "POST", body: fd })
+    fetch(url, { method: isEdit ? "PUT" : "POST", body: fd })
       .then(function(res){
         if(!res.ok) return res.json().then(function(d){ throw new Error(d.error || "Erreur"); });
         return res.json();
       })
       .then(function(){
         $("captureDialog").close();
-        showToast("Enregistré — " + categorie + " · " + montant.toFixed(2).replace(".", ",") + " €");
+        showToast(isEdit ? "Ticket modifié" : "Enregistré — " + categorie + " · " + montant.toFixed(2).replace(".", ",") + " €");
         loadMyTickets();
       })
       .catch(function(err){
         showToast(err.message || "Échec de l'enregistrement");
         $("submitTicketBtn").disabled = false;
+      });
+  });
+
+  // ---------- suppression ----------
+  $("deleteConfirmDialog").addEventListener("click", function(e){ if(e.target === this) this.close(); });
+  $("confirmDeleteBtn").addEventListener("click", function(){
+    if(!deleteTargetId) return;
+    fetch("/api/tickets/" + deleteTargetId + "?technicien=" + encodeURIComponent(techName), { method: "DELETE" })
+      .then(function(res){
+        if(!res.ok) return res.json().then(function(d){ throw new Error(d.error || "Erreur"); });
+        return res.json();
+      })
+      .then(function(){
+        $("deleteConfirmDialog").close();
+        showToast("Ticket supprimé");
+        loadMyTickets();
+      })
+      .catch(function(err){
+        showToast(err.message || "Échec de la suppression");
       });
   });
 
@@ -179,15 +251,22 @@
     var card = document.createElement("div");
     card.className = "ticket-card";
 
-    var img = document.createElement("img");
-    img.className = "thumb";
-    img.src = t.photo_url || "";
-    img.alt = "Ticket " + (t.categorie || "");
-    img.addEventListener("click", function(){
-      $("lightboxImg").src = t.photo_url || "";
-      $("lightbox").showModal();
-    });
-    card.appendChild(img);
+    if(t.photo_url){
+      var img = document.createElement("img");
+      img.className = "thumb";
+      img.src = t.photo_url;
+      img.alt = "Ticket " + (t.categorie || "");
+      img.addEventListener("click", function(){
+        $("lightboxImg").src = t.photo_url;
+        $("lightbox").showModal();
+      });
+      card.appendChild(img);
+    } else {
+      var ph = document.createElement("div");
+      ph.className = "thumb-placeholder";
+      ph.textContent = "🕒";
+      card.appendChild(ph);
+    }
 
     var main = document.createElement("div");
     main.className = "ticket-main";
@@ -196,6 +275,9 @@
     top.innerHTML =
       '<span class="ticket-cat">' + escapeHtml(t.categorie || "") + '</span>' +
       '<span class="ticket-date mono">' + frDate(t.date) + '</span>';
+    if(t.pending_receipt && !t.photo_url){
+      top.innerHTML += '<span class="pending-badge">' + escapeHtml(t.categorie || "Justificatif") + ' en attente</span>';
+    }
     main.appendChild(top);
     if(t.note){
       var note = document.createElement("div");
@@ -222,6 +304,23 @@
     pill.textContent = STATUS_LABEL[t.status] || t.status;
     side.appendChild(pill);
     card.appendChild(side);
+
+    if(t.status === "en_attente"){
+      var actions = document.createElement("div");
+      actions.className = "tech-actions";
+      var editBtn = document.createElement("button");
+      editBtn.className = "btn-sm"; editBtn.type = "button"; editBtn.textContent = "Modifier";
+      editBtn.addEventListener("click", function(){ openEditForm(t); });
+      actions.appendChild(editBtn);
+      var delBtn = document.createElement("button");
+      delBtn.className = "btn-sm bad-btn"; delBtn.type = "button"; delBtn.textContent = "Supprimer";
+      delBtn.addEventListener("click", function(){
+        deleteTargetId = t.id;
+        $("deleteConfirmDialog").showModal();
+      });
+      actions.appendChild(delBtn);
+      card.appendChild(actions);
+    }
 
     return card;
   }
@@ -265,7 +364,6 @@
       .catch(function(){ showToast("Impossible de charger vos tickets"); });
   }
 
-  resetForm();
   renderTechView();
   loadMyTickets();
   setInterval(loadMyTickets, 20000);

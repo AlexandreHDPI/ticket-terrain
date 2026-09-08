@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from functools import wraps
@@ -17,6 +18,7 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 DB_PATH = os.path.join(BASE_DIR, "tickets.db")
 ALLOWED_EXT = {"jpg", "jpeg", "png", "webp"}
 MIME_BY_EXT = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
+EDITABLE_STATUSES = ("en_attente",)
 
 # ---------------------------------------------------------------------------
 # Deux modes de stockage :
@@ -38,9 +40,51 @@ else:
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", config.SECRET_KEY)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024  # 8 Mo par requête
+# Cookies de session sécurisés : Secure dès qu'on tourne derrière HTTPS (Render
+# fournit HTTPS en frontal), SameSite=Lax pour limiter les envois cross-site.
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = bool(os.environ.get("RENDER") or USE_PG)
+app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", config.ADMIN_USERNAME)
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", config.ADMIN_PASSWORD)
+
+# ---------------------------------------------------------------------------
+# Anti-brute-force simple sur la connexion admin : blocage temporaire par IP
+# après plusieurs échecs. En mémoire (suffisant pour une seule instance).
+# ---------------------------------------------------------------------------
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_LOCKOUT_SECONDS = 300
+_login_attempts = {}
+
+
+def _client_ip():
+    return (request.headers.get("X-Forwarded-For", "") or request.remote_addr or "?").split(",")[0].strip()
+
+
+def _login_blocked():
+    entry = _login_attempts.get(_client_ip())
+    if not entry:
+        return False
+    count, first_fail = entry
+    if count < LOGIN_MAX_ATTEMPTS:
+        return False
+    if time.time() - first_fail > LOGIN_LOCKOUT_SECONDS:
+        _login_attempts.pop(_client_ip(), None)
+        return False
+    return True
+
+
+def _register_login_failure():
+    ip = _client_ip()
+    count, first_fail = _login_attempts.get(ip, (0, time.time()))
+    if time.time() - first_fail > LOGIN_LOCKOUT_SECONDS:
+        count, first_fail = 0, time.time()
+    _login_attempts[ip] = (count + 1, first_fail)
+
+
+def _clear_login_failures():
+    _login_attempts.pop(_client_ip(), None)
 
 
 def get_conn():
@@ -65,14 +109,27 @@ def init_db():
                 date TEXT NOT NULL,
                 categorie TEXT NOT NULL,
                 note TEXT,
-                photo_data BYTEA NOT NULL,
-                photo_mime TEXT NOT NULL,
+                photo_data BYTEA,
+                photo_mime TEXT,
+                pending_receipt BOOLEAN NOT NULL DEFAULT FALSE,
                 status TEXT NOT NULL DEFAULT 'en_attente',
                 admin_note TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                updated_at TEXT
             )
             """
         )
+        # Migrations douces pour les bases créées avant l'ajout de ces colonnes.
+        for stmt in (
+            "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS pending_receipt BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS updated_at TEXT",
+            "ALTER TABLE tickets ALTER COLUMN photo_data DROP NOT NULL",
+            "ALTER TABLE tickets ALTER COLUMN photo_mime DROP NOT NULL",
+        ):
+            try:
+                cur.execute(stmt)
+            except Exception:
+                conn.rollback()
         conn.commit()
         cur.close()
     else:
@@ -85,13 +142,20 @@ def init_db():
                 date TEXT NOT NULL,
                 categorie TEXT NOT NULL,
                 note TEXT,
-                photo_filename TEXT NOT NULL,
+                photo_filename TEXT,
+                pending_receipt INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'en_attente',
                 admin_note TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                updated_at TEXT
             )
             """
         )
+        existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(tickets)").fetchall()}
+        if "pending_receipt" not in existing_cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN pending_receipt INTEGER NOT NULL DEFAULT 0")
+        if "updated_at" not in existing_cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN updated_at TEXT")
         conn.commit()
     conn.close()
 
@@ -113,6 +177,7 @@ def allowed_file(filename):
 
 
 def row_to_dict(r):
+    has_photo = bool(r["photo_data"]) if USE_PG else bool(r["photo_filename"])
     return {
         "id": r["id"],
         "technicien": r["technicien"],
@@ -120,11 +185,27 @@ def row_to_dict(r):
         "date": r["date"],
         "categorie": r["categorie"],
         "note": r["note"],
-        "photo_url": url_for("serve_photo", ticket_id=r["id"]),
+        "photo_url": url_for("serve_photo", ticket_id=r["id"]) if has_photo else None,
+        "pending_receipt": bool(r["pending_receipt"]),
         "status": r["status"],
         "admin_note": r["admin_note"],
         "created_at": r["created_at"],
+        "updated_at": r["updated_at"],
     }
+
+
+def get_ticket_row(conn, ticket_id):
+    if USE_PG:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM tickets WHERE id = %s", (ticket_id,))
+        row = cur.fetchone()
+        cur.close()
+        return row
+    return conn.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+
+
+def parse_bool(value):
+    return str(value).strip().lower() in ("1", "true", "on", "yes")
 
 
 # ---------------------------------------------------------------------------
@@ -143,10 +224,14 @@ def create_ticket():
     date = request.form.get("date")
     categorie = request.form.get("categorie")
     note = (request.form.get("note") or "").strip()
+    pending_receipt = parse_bool(request.form.get("pending_receipt"))
     photo = request.files.get("photo")
+    has_photo = bool(photo and photo.filename)
 
-    if not technicien or not montant_raw or not date or not categorie or not photo:
+    if not technicien or not montant_raw or not date or not categorie:
         return jsonify({"error": "Champs manquants."}), 400
+    if not has_photo and not pending_receipt:
+        return jsonify({"error": "Ajoutez une photo, ou cochez « justificatif en attente »."}), 400
 
     try:
         montant = round(float(montant_raw), 2)
@@ -155,39 +240,174 @@ def create_ticket():
     if montant <= 0:
         return jsonify({"error": "Montant invalide."}), 400
 
-    if photo.filename == "" or not allowed_file(photo.filename):
+    if has_photo and not allowed_file(photo.filename):
         return jsonify({"error": "Format de photo non supporté."}), 400
 
-    ext = photo.filename.rsplit(".", 1)[1].lower()
-    mime = MIME_BY_EXT[ext]
     ticket_id = uuid.uuid4().hex
     created_at = datetime.now(timezone.utc).isoformat()
 
     conn = get_conn()
     if USE_PG:
-        photo_bytes = photo.read()
+        photo_bytes = None
+        mime = None
+        if has_photo:
+            ext = photo.filename.rsplit(".", 1)[1].lower()
+            mime = MIME_BY_EXT[ext]
+            photo_bytes = psycopg2.Binary(photo.read())
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO tickets "
-            "(id, technicien, montant, date, categorie, note, photo_data, photo_mime, status, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'en_attente', %s)",
+            "(id, technicien, montant, date, categorie, note, photo_data, photo_mime, "
+            "pending_receipt, status, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'en_attente', %s)",
             (ticket_id, technicien, montant, date, categorie, note,
-             psycopg2.Binary(photo_bytes), mime, created_at),
+             photo_bytes, mime, pending_receipt, created_at),
         )
         conn.commit()
         cur.close()
     else:
-        filename = secure_filename(f"{ticket_id}.{ext}")
-        photo.save(os.path.join(UPLOAD_DIR, filename))
+        filename = None
+        if has_photo:
+            ext = photo.filename.rsplit(".", 1)[1].lower()
+            filename = secure_filename(f"{ticket_id}.{ext}")
+            photo.save(os.path.join(UPLOAD_DIR, filename))
         conn.execute(
             "INSERT INTO tickets "
-            "(id, technicien, montant, date, categorie, note, photo_filename, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'en_attente', ?)",
-            (ticket_id, technicien, montant, date, categorie, note, filename, created_at),
+            "(id, technicien, montant, date, categorie, note, photo_filename, "
+            "pending_receipt, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'en_attente', ?)",
+            (ticket_id, technicien, montant, date, categorie, note, filename,
+             1 if pending_receipt else 0, created_at),
         )
         conn.commit()
     conn.close()
     return jsonify({"id": ticket_id}), 201
+
+
+@app.route("/api/tickets/<ticket_id>", methods=["PUT"])
+def update_my_ticket(ticket_id):
+    conn = get_conn()
+    row = get_ticket_row(conn, ticket_id)
+    if not row:
+        conn.close()
+        return jsonify({"error": "Ticket introuvable."}), 404
+
+    technicien = (request.form.get("technicien") or "").strip()
+    if not technicien or technicien.lower() != (row["technicien"] or "").strip().lower():
+        conn.close()
+        return jsonify({"error": "Vous ne pouvez modifier que vos propres tickets."}), 403
+    if row["status"] not in EDITABLE_STATUSES:
+        conn.close()
+        return jsonify({"error": "Ce ticket a déjà été traité par l'admin, il n'est plus modifiable."}), 409
+
+    montant_raw = request.form.get("montant")
+    date = request.form.get("date")
+    categorie = request.form.get("categorie")
+    note = (request.form.get("note") or "").strip()
+    pending_receipt = parse_bool(request.form.get("pending_receipt"))
+    photo = request.files.get("photo")
+    has_new_photo = bool(photo and photo.filename)
+
+    if not montant_raw or not date or not categorie:
+        conn.close()
+        return jsonify({"error": "Champs manquants."}), 400
+    try:
+        montant = round(float(montant_raw), 2)
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({"error": "Montant invalide."}), 400
+    if montant <= 0:
+        conn.close()
+        return jsonify({"error": "Montant invalide."}), 400
+
+    keeps_existing_photo = bool(row["photo_data"]) if USE_PG else bool(row["photo_filename"])
+    if not has_new_photo and not keeps_existing_photo and not pending_receipt:
+        conn.close()
+        return jsonify({"error": "Ajoutez une photo, ou cochez « justificatif en attente »."}), 400
+    if has_new_photo and not allowed_file(photo.filename):
+        conn.close()
+        return jsonify({"error": "Format de photo non supporté."}), 400
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+
+    if USE_PG:
+        cur = conn.cursor()
+        if has_new_photo:
+            ext = photo.filename.rsplit(".", 1)[1].lower()
+            mime = MIME_BY_EXT[ext]
+            photo_bytes = psycopg2.Binary(photo.read())
+            cur.execute(
+                "UPDATE tickets SET montant=%s, date=%s, categorie=%s, note=%s, pending_receipt=%s, "
+                "photo_data=%s, photo_mime=%s, updated_at=%s WHERE id=%s",
+                (montant, date, categorie, note, pending_receipt, photo_bytes, mime, updated_at, ticket_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE tickets SET montant=%s, date=%s, categorie=%s, note=%s, pending_receipt=%s, "
+                "updated_at=%s WHERE id=%s",
+                (montant, date, categorie, note, pending_receipt, updated_at, ticket_id),
+            )
+        conn.commit()
+        cur.close()
+    else:
+        if has_new_photo:
+            ext = photo.filename.rsplit(".", 1)[1].lower()
+            filename = secure_filename(f"{ticket_id}-{uuid.uuid4().hex[:8]}.{ext}")
+            photo.save(os.path.join(UPLOAD_DIR, filename))
+            old_filename = row["photo_filename"]
+            conn.execute(
+                "UPDATE tickets SET montant=?, date=?, categorie=?, note=?, pending_receipt=?, "
+                "photo_filename=?, updated_at=? WHERE id=?",
+                (montant, date, categorie, note, 1 if pending_receipt else 0, filename, updated_at, ticket_id),
+            )
+            conn.commit()
+            if old_filename:
+                try:
+                    os.remove(os.path.join(UPLOAD_DIR, old_filename))
+                except OSError:
+                    pass
+        else:
+            conn.execute(
+                "UPDATE tickets SET montant=?, date=?, categorie=?, note=?, pending_receipt=?, "
+                "updated_at=? WHERE id=?",
+                (montant, date, categorie, note, 1 if pending_receipt else 0, updated_at, ticket_id),
+            )
+            conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/tickets/<ticket_id>", methods=["DELETE"])
+def delete_my_ticket(ticket_id):
+    technicien = (request.args.get("technicien") or "").strip()
+    conn = get_conn()
+    row = get_ticket_row(conn, ticket_id)
+    if not row:
+        conn.close()
+        return jsonify({"error": "Ticket introuvable."}), 404
+    if not technicien or technicien.lower() != (row["technicien"] or "").strip().lower():
+        conn.close()
+        return jsonify({"error": "Vous ne pouvez supprimer que vos propres tickets."}), 403
+    if row["status"] not in EDITABLE_STATUSES:
+        conn.close()
+        return jsonify({"error": "Ce ticket a déjà été traité par l'admin, il n'est plus modifiable."}), 409
+
+    if USE_PG:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM tickets WHERE id = %s", (ticket_id,))
+        conn.commit()
+        cur.close()
+    else:
+        filename = row["photo_filename"]
+        conn.execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
+        conn.commit()
+        if filename:
+            try:
+                os.remove(os.path.join(UPLOAD_DIR, filename))
+            except OSError:
+                pass
+    conn.close()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/tickets")
@@ -199,7 +419,8 @@ def list_my_tickets():
     if USE_PG:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            "SELECT id, technicien, montant, date, categorie, note, status, admin_note, created_at "
+            "SELECT id, technicien, montant, date, categorie, note, photo_data, "
+            "pending_receipt, status, admin_note, created_at, updated_at "
             "FROM tickets WHERE lower(technicien) = lower(%s) ORDER BY created_at DESC",
             (technicien,),
         )
@@ -214,6 +435,21 @@ def list_my_tickets():
     return jsonify([row_to_dict(r) for r in rows])
 
 
+@app.route("/api/technicians")
+def list_technicians():
+    conn = get_conn()
+    if USE_PG:
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT technicien FROM tickets ORDER BY technicien")
+        names = [r[0] for r in cur.fetchall()]
+        cur.close()
+    else:
+        rows = conn.execute("SELECT DISTINCT technicien FROM tickets ORDER BY technicien").fetchall()
+        names = [r["technicien"] for r in rows]
+    conn.close()
+    return jsonify([n for n in names if n])
+
+
 @app.route("/photos/<ticket_id>")
 def serve_photo(ticket_id):
     conn = get_conn()
@@ -223,14 +459,14 @@ def serve_photo(ticket_id):
         row = cur.fetchone()
         cur.close()
         conn.close()
-        if not row:
+        if not row or not row[0]:
             return "", 404
         photo_data, photo_mime = row
         return Response(bytes(photo_data), mimetype=photo_mime)
     else:
         row = conn.execute("SELECT photo_filename FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
         conn.close()
-        if not row:
+        if not row or not row["photo_filename"]:
             return "", 404
         return send_from_directory(UPLOAD_DIR, row["photo_filename"])
 
@@ -250,12 +486,17 @@ def admin_home():
 def admin_login():
     error = None
     if request.method == "POST":
-        username = request.form.get("username", "")
-        password = request.form.get("password", "")
-        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-            session["is_admin"] = True
-            return redirect(url_for("admin_home"))
-        error = "Identifiant ou mot de passe incorrect."
+        if _login_blocked():
+            error = "Trop de tentatives. Réessayez dans quelques minutes."
+        else:
+            username = request.form.get("username", "")
+            password = request.form.get("password", "")
+            if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+                _clear_login_failures()
+                session["is_admin"] = True
+                return redirect(url_for("admin_home"))
+            _register_login_failure()
+            error = "Identifiant ou mot de passe incorrect."
     return render_template("admin_login.html", error=error)
 
 
@@ -272,7 +513,8 @@ def list_all_tickets():
     if USE_PG:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
-            "SELECT id, technicien, montant, date, categorie, note, status, admin_note, created_at "
+            "SELECT id, technicien, montant, date, categorie, note, photo_data, "
+            "pending_receipt, status, admin_note, created_at, updated_at "
             "FROM tickets ORDER BY created_at DESC"
         )
         rows = cur.fetchall()
@@ -306,6 +548,90 @@ def update_ticket_status(ticket_id):
             (status, admin_note, ticket_id),
         )
         conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/tickets/<ticket_id>", methods=["PUT"])
+@login_required
+def admin_update_ticket(ticket_id):
+    conn = get_conn()
+    row = get_ticket_row(conn, ticket_id)
+    if not row:
+        conn.close()
+        return jsonify({"error": "Ticket introuvable."}), 404
+
+    technicien = (request.form.get("technicien") or row["technicien"] or "").strip()
+    montant_raw = request.form.get("montant")
+    date = request.form.get("date")
+    categorie = request.form.get("categorie")
+    note = request.form.get("note")
+    note = row["note"] if note is None else note.strip()
+    pending_raw = request.form.get("pending_receipt")
+    pending_receipt = parse_bool(pending_raw) if pending_raw is not None else bool(row["pending_receipt"])
+    photo = request.files.get("photo")
+    has_new_photo = bool(photo and photo.filename)
+
+    if not technicien or not montant_raw or not date or not categorie:
+        conn.close()
+        return jsonify({"error": "Champs manquants."}), 400
+    try:
+        montant = round(float(montant_raw), 2)
+    except (TypeError, ValueError):
+        conn.close()
+        return jsonify({"error": "Montant invalide."}), 400
+    if montant <= 0:
+        conn.close()
+        return jsonify({"error": "Montant invalide."}), 400
+    if has_new_photo and not allowed_file(photo.filename):
+        conn.close()
+        return jsonify({"error": "Format de photo non supporté."}), 400
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+
+    if USE_PG:
+        cur = conn.cursor()
+        if has_new_photo:
+            ext = photo.filename.rsplit(".", 1)[1].lower()
+            mime = MIME_BY_EXT[ext]
+            photo_bytes = psycopg2.Binary(photo.read())
+            cur.execute(
+                "UPDATE tickets SET technicien=%s, montant=%s, date=%s, categorie=%s, note=%s, "
+                "pending_receipt=%s, photo_data=%s, photo_mime=%s, updated_at=%s WHERE id=%s",
+                (technicien, montant, date, categorie, note, pending_receipt, photo_bytes, mime, updated_at, ticket_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE tickets SET technicien=%s, montant=%s, date=%s, categorie=%s, note=%s, "
+                "pending_receipt=%s, updated_at=%s WHERE id=%s",
+                (technicien, montant, date, categorie, note, pending_receipt, updated_at, ticket_id),
+            )
+        conn.commit()
+        cur.close()
+    else:
+        if has_new_photo:
+            ext = photo.filename.rsplit(".", 1)[1].lower()
+            filename = secure_filename(f"{ticket_id}-{uuid.uuid4().hex[:8]}.{ext}")
+            photo.save(os.path.join(UPLOAD_DIR, filename))
+            old_filename = row["photo_filename"]
+            conn.execute(
+                "UPDATE tickets SET technicien=?, montant=?, date=?, categorie=?, note=?, "
+                "pending_receipt=?, photo_filename=?, updated_at=? WHERE id=?",
+                (technicien, montant, date, categorie, note, 1 if pending_receipt else 0, filename, updated_at, ticket_id),
+            )
+            conn.commit()
+            if old_filename:
+                try:
+                    os.remove(os.path.join(UPLOAD_DIR, old_filename))
+                except OSError:
+                    pass
+        else:
+            conn.execute(
+                "UPDATE tickets SET technicien=?, montant=?, date=?, categorie=?, note=?, "
+                "pending_receipt=?, updated_at=? WHERE id=?",
+                (technicien, montant, date, categorie, note, 1 if pending_receipt else 0, updated_at, ticket_id),
+            )
+            conn.commit()
     conn.close()
     return jsonify({"ok": True})
 

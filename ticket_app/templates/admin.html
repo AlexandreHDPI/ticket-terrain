@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin — Tickets Terrain</title>
+<meta name="theme-color" content="#C31C22">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tickets HDPI">
+<link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32.png') }}">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
 <script src="{{ url_for('static', filename='theme.js') }}"></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -36,6 +43,11 @@
         <option value="valide">Validé</option>
         <option value="rejete">Rejeté</option>
       </select>
+      <div class="date-range">
+        <label>Du <input type="date" id="dateFromFilter"></label>
+        <label>Au <input type="date" id="dateToFilter"></label>
+        <button type="button" class="btn-sm plain-btn" id="clearDateFilter">Réinitialiser</button>
+      </div>
     </div>
 
     <div>
@@ -63,6 +75,64 @@
       <button class="export-btn" id="exportBtn" type="button"><span>⬇️</span> Exporter tous les tickets (CSV)</button>
     </div>
   </div>
+</dialog>
+
+<dialog id="adminEditDialog">
+  <div class="dialog-head">
+    <h2>Modifier le ticket</h2>
+    <button class="dialog-close" data-close="adminEditDialog" aria-label="Fermer" type="button">&times;</button>
+  </div>
+  <form class="dialog-body" id="adminEditForm">
+    <label class="photo-picker" id="adminPhotoPicker" for="adminPhotoInput">
+      <span id="adminPhotoPickerContent"><span class="icon">📷</span><span>Changer la photo du ticket</span></span>
+      <input type="file" id="adminPhotoInput" accept="image/*" style="display:none;">
+    </label>
+
+    <div class="field">
+      <label for="adminTechInput">Technicien</label>
+      <input id="adminTechInput" required>
+    </div>
+
+    <div class="field">
+      <label for="adminMontantInput">Montant</label>
+      <div class="amount-field">
+        <input type="number" id="adminMontantInput" inputmode="decimal" step="0.01" min="0" placeholder="0,00" required>
+        <span>€</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="adminDateInput">Date</label>
+      <input type="date" id="adminDateInput" required>
+    </div>
+
+    <div class="field">
+      <label for="adminCategorieInput">Catégorie</label>
+      <select id="adminCategorieInput" required>
+        <option value="Péage">Péage</option>
+        <option value="Essence">Essence</option>
+        <option value="Repas">Repas</option>
+        <option value="Parking">Parking</option>
+        <option value="Hébergement">Hébergement</option>
+        <option value="Autre">Autre</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="adminNoteInput">Note</label>
+      <textarea id="adminNoteInput"></textarea>
+    </div>
+
+    <label class="pending-check">
+      <input type="checkbox" id="adminPendingReceiptInput">
+      <span>Justificatif pas encore reçu</span>
+    </label>
+
+    <div class="dialog-actions">
+      <button type="button" class="btn ghost" data-close="adminEditDialog">Annuler</button>
+      <button type="submit" class="btn primary" id="adminSubmitEditBtn">Enregistrer les modifications</button>
+    </div>
+  </form>
 </dialog>
 
 <dialog id="lightbox">

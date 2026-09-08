@@ -132,6 +132,14 @@ select#statusFilter{
   border:1px solid var(--border); background:var(--surface); color:var(--text); font-size:13px; font-weight:600;
   padding:7px 11px; border-radius:999px; cursor:pointer;
 }
+.date-range{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+.date-range label{
+  display:flex; align-items:center; gap:6px; font-size:12px; font-weight:600; color:var(--text-muted);
+}
+.date-range input[type="date"]{
+  border:1px solid var(--border); background:var(--surface); color:var(--text); font-size:12.5px; font-weight:600;
+  padding:6px 9px; border-radius:8px;
+}
 
 .section-title{font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--text-muted); font-weight:700; margin-bottom:2px;}
 
@@ -200,6 +208,24 @@ dialog::backdrop{background:rgba(39,27,25,.5);}
 }
 .photo-picker img{max-width:100%; max-height:220px; border-radius:9px; display:block;}
 .photo-picker .icon{font-size:26px;}
+
+.pending-check{
+  display:flex; align-items:flex-start; gap:9px; font-size:13.5px; color:var(--text); cursor:pointer;
+  background:var(--surface-alt); border:1px solid var(--border); border-radius:10px; padding:10px 12px;
+}
+.pending-check input{margin-top:2px;}
+.pending-hint{color:var(--text-muted); font-size:12px;}
+
+.thumb-placeholder{
+  width:56px; height:56px; border-radius:9px; border:1px dashed var(--border); background:var(--surface-alt);
+  display:flex; align-items:center; justify-content:center; font-size:20px; flex-shrink:0;
+}
+.pending-badge{
+  font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; letter-spacing:.02em;
+  background:var(--warn-bg); color:var(--warn); white-space:nowrap;
+}
+
+.tech-actions{display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; grid-column:1/-1;}
 
 .dialog-actions{display:flex; gap:8px; margin-top:2px;}
 .btn{flex:1; border:none; border-radius:10px; padding:11px; font-size:14.5px; font-weight:700; cursor:pointer;}

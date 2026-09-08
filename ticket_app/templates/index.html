@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Tickets Terrain — HDPI</title>
+<meta name="theme-color" content="#C31C22">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tickets HDPI">
+<link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+<link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='icons/favicon-32.png') }}">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
 <script src="{{ url_for('static', filename='theme.js') }}"></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
@@ -26,7 +34,8 @@
   <main class="view">
     <div class="identity-row">
       <label for="techName">Vous êtes</label>
-      <input id="techName" placeholder="Prénom Nom" autocomplete="off">
+      <input id="techName" placeholder="Prénom Nom" autocomplete="off" list="techNameList">
+      <datalist id="techNameList"></datalist>
     </div>
 
     <button class="capture-cta" id="newTicketBtn"><span class="icon">📷</span> Nouveau ticket</button>
@@ -81,11 +90,26 @@
       <textarea id="noteInput" placeholder="Précision utile pour l'admin..."></textarea>
     </div>
 
+    <label class="pending-check">
+      <input type="checkbox" id="pendingReceiptInput">
+      <span>Justificatif pas encore reçu <span id="pendingReceiptHint" class="pending-hint">(ex : facture hôtel ou note de restaurant à venir)</span></span>
+    </label>
+
     <div class="dialog-actions">
       <button type="button" class="btn ghost" data-close="captureDialog">Annuler</button>
       <button type="submit" class="btn primary" id="submitTicketBtn">Enregistrer</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="deleteConfirmDialog">
+  <div class="dialog-body" style="padding-top:18px;">
+    <p style="margin:0 0 4px;">Supprimer définitivement ce ticket ?</p>
+    <div class="dialog-actions">
+      <button type="button" class="btn ghost" data-close="deleteConfirmDialog">Annuler</button>
+      <button type="button" class="btn primary" id="confirmDeleteBtn" style="background:var(--bad);">Supprimer</button>
+    </div>
+  </div>
 </dialog>
 
 <dialog id="lightbox">

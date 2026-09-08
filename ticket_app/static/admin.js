@@ -2,6 +2,9 @@
   var $ = function(id){ return document.getElementById(id); };
   var allTickets = [];
   var adminFilterTech = "all";
+  var editingAdminTicketId = null;
+  var adminPendingBlob = null;
+  var adminKeepExistingPhoto = false;
 
   var toastTimer = null;
   function showToast(msg){
@@ -120,15 +123,22 @@
     var card = document.createElement("div");
     card.className = "ticket-card";
 
-    var img = document.createElement("img");
-    img.className = "thumb";
-    img.src = t.photo_url || "";
-    img.alt = "Ticket " + (t.categorie || "");
-    img.addEventListener("click", function(){
-      $("lightboxImg").src = t.photo_url || "";
-      $("lightbox").showModal();
-    });
-    card.appendChild(img);
+    if(t.photo_url){
+      var img = document.createElement("img");
+      img.className = "thumb";
+      img.src = t.photo_url;
+      img.alt = "Ticket " + (t.categorie || "");
+      img.addEventListener("click", function(){
+        $("lightboxImg").src = t.photo_url;
+        $("lightbox").showModal();
+      });
+      card.appendChild(img);
+    } else {
+      var ph = document.createElement("div");
+      ph.className = "thumb-placeholder";
+      ph.textContent = "🕒";
+      card.appendChild(ph);
+    }
 
     var main = document.createElement("div");
     main.className = "ticket-main";
@@ -138,6 +148,9 @@
       '<span class="ticket-cat">' + escapeHtml(t.categorie || "") + '</span>' +
       '<span class="ticket-date mono">' + frDate(t.date) + '</span>' +
       '<span class="ticket-tech">· ' + escapeHtml(t.technicien || "") + '</span>';
+    if(t.pending_receipt && !t.photo_url){
+      top.innerHTML += '<span class="pending-badge">' + escapeHtml(t.categorie || "Justificatif") + ' en attente</span>';
+    }
     main.appendChild(top);
     if(t.note){
       var note = document.createElement("div");
@@ -186,10 +199,121 @@
       resetBtn.addEventListener("click", function(){ updateStatus(t.id, "en_attente", ""); });
       actions.appendChild(resetBtn);
     }
+    var editBtn = document.createElement("button");
+    editBtn.className = "btn-sm plain-btn"; editBtn.type = "button"; editBtn.textContent = "Modifier";
+    editBtn.addEventListener("click", function(){ openAdminEdit(t); });
+    actions.appendChild(editBtn);
     card.appendChild(actions);
 
     return card;
   }
+
+  // ---------- édition admin (tous statuts, tous champs) ----------
+  function adminDefaultPhotoLabel(){
+    return '<span class="icon">📷</span><span>Changer la photo du ticket</span>';
+  }
+
+  function openAdminEdit(t){
+    editingAdminTicketId = t.id;
+    adminPendingBlob = null;
+    adminKeepExistingPhoto = !!t.photo_url;
+    $("adminEditForm").reset();
+    $("adminTechInput").value = t.technicien || "";
+    $("adminMontantInput").value = t.montant;
+    $("adminDateInput").value = t.date;
+    $("adminCategorieInput").value = t.categorie;
+    $("adminNoteInput").value = t.note || "";
+    $("adminPendingReceiptInput").checked = !!t.pending_receipt;
+    $("adminPhotoPickerContent").innerHTML = t.photo_url
+      ? '<img src="' + t.photo_url + '" alt="Photo actuelle">'
+      : adminDefaultPhotoLabel();
+    $("adminEditDialog").showModal();
+  }
+
+  function compressToBlob(file){
+    return new Promise(function(resolve, reject){
+      var reader = new FileReader();
+      reader.onerror = reject;
+      reader.onload = function(){
+        var img = new Image();
+        img.onerror = reject;
+        img.onload = function(){
+          var dims = [1600, 1280, 1000, 800];
+          var qualities = [0.8, 0.65, 0.5, 0.4];
+          var targetBytes = 380000;
+          var di = 0, qi = 0;
+          function tryNext(lastBlob){
+            if(di >= dims.length){ resolve(lastBlob); return; }
+            var maxDim = dims[di];
+            var scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+            var w = Math.max(1, Math.round(img.width * scale));
+            var h = Math.max(1, Math.round(img.height * scale));
+            var canvas = document.createElement("canvas");
+            canvas.width = w; canvas.height = h;
+            var ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, w, h);
+            canvas.toBlob(function(blob){
+              if(!blob){ reject(new Error("toBlob failed")); return; }
+              if(blob.size <= targetBytes || (di === dims.length - 1 && qi === qualities.length - 1)){
+                resolve(blob);
+                return;
+              }
+              qi++;
+              if(qi >= qualities.length){ qi = 0; di++; }
+              tryNext(blob);
+            }, "image/jpeg", qualities[qi]);
+          }
+          tryNext(null);
+        };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  $("adminPhotoInput").addEventListener("change", function(){
+    var file = $("adminPhotoInput").files[0];
+    if(!file) return;
+    adminKeepExistingPhoto = false;
+    $("adminPhotoPickerContent").innerHTML = "<span>Compression de la photo…</span>";
+    compressToBlob(file).then(function(blob){
+      adminPendingBlob = blob;
+      var url = URL.createObjectURL(blob);
+      $("adminPhotoPickerContent").innerHTML = '<img src="' + url + '" alt="Aperçu">';
+    }).catch(function(){
+      $("adminPhotoPickerContent").innerHTML = '<span class="icon">📷</span><span>Échec de lecture — réessayez</span>';
+    });
+  });
+
+  $("adminEditForm").addEventListener("submit", function(e){
+    e.preventDefault();
+    if(!editingAdminTicketId) return;
+    var montant = parseFloat($("adminMontantInput").value);
+    if(!(montant > 0)){ showToast("Indiquez un montant valide"); return; }
+    var fd = new FormData();
+    fd.append("technicien", $("adminTechInput").value.trim());
+    fd.append("montant", montant);
+    fd.append("date", $("adminDateInput").value);
+    fd.append("categorie", $("adminCategorieInput").value);
+    fd.append("note", $("adminNoteInput").value.trim());
+    fd.append("pending_receipt", $("adminPendingReceiptInput").checked ? "1" : "0");
+    if(adminPendingBlob){
+      fd.append("photo", adminPendingBlob, "ticket.jpg");
+    }
+    $("adminSubmitEditBtn").disabled = true;
+    fetch("/api/admin/tickets/" + editingAdminTicketId, { method: "PUT", body: fd })
+      .then(function(res){
+        if(!res.ok) return res.json().then(function(d){ throw new Error(d.error || "Erreur"); });
+        return res.json();
+      })
+      .then(function(){
+        $("adminEditDialog").close();
+        showToast("Ticket modifié");
+        loadTickets();
+      })
+      .catch(function(err){ showToast(err.message || "Échec de l'enregistrement"); })
+      .finally(function(){ $("adminSubmitEditBtn").disabled = false; });
+  });
 
   function render(){
     var enAttente = allTickets.filter(function(t){ return t.status === "en_attente"; });
@@ -228,10 +352,13 @@
     });
 
     var statusFilter = $("statusFilter").value;
+    var dateFrom = $("dateFromFilter").value;
+    var dateTo = $("dateToFilter").value;
     var filtered = allTickets.filter(function(t){
       var techOk = adminFilterTech === "all" || (t.technicien || "?").trim().toLowerCase() === adminFilterTech;
       var statusOk = statusFilter === "all" || t.status === statusFilter;
-      return techOk && statusOk;
+      var dateOk = (!dateFrom || (t.date || "") >= dateFrom) && (!dateTo || (t.date || "") <= dateTo);
+      return techOk && statusOk && dateOk;
     });
 
     var list = $("adminTicketList");
@@ -244,6 +371,13 @@
   }
 
   $("statusFilter").addEventListener("change", render);
+  $("dateFromFilter").addEventListener("change", render);
+  $("dateToFilter").addEventListener("change", render);
+  $("clearDateFilter").addEventListener("click", function(){
+    $("dateFromFilter").value = "";
+    $("dateToFilter").value = "";
+    render();
+  });
 
   function loadTickets(){
     return fetch("/api/admin/tickets")
