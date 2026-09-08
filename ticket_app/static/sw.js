@@ -1,7 +1,7 @@
 // Service worker minimal : permet à la page technicien de s'ouvrir même sans
 // réseau (les tickets créés hors-ligne sont mis en file d'attente côté page,
 // via IndexedDB, et envoyés automatiquement au retour de la connexion).
-const CACHE_NAME = "tickets-hdpi-v1";
+const CACHE_NAME = "tickets-hdpi-v2";
 const APP_SHELL = [
   "/",
   "/static/style.css",
@@ -41,6 +41,28 @@ self.addEventListener("fetch", (event) => {
     return; // toujours en direct depuis le réseau, jamais depuis le cache
   }
 
+  // La page HTML elle-même (navigation) : toujours privilégier le réseau
+  // pour que les mises à jour de l'application (nouveaux champs, etc.)
+  // soient visibles immédiatement. Le cache ne sert que si le réseau est
+  // indisponible (vrai mode hors-ligne).
+  const isNavigation = req.mode === "navigate" || req.destination === "document";
+  if (isNavigation) {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          if (res && res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(req, copy));
+          }
+          return res;
+        })
+        .catch(() => caches.match(req))
+    );
+    return;
+  }
+
+  // Fichiers statiques (CSS/JS/icônes) : affichage immédiat depuis le cache
+  // si présent, avec mise à jour en arrière-plan pour la prochaine visite.
   event.respondWith(
     caches.match(req).then((cached) => {
       const network = fetch(req)
