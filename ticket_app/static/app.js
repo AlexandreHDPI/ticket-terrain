@@ -255,7 +255,7 @@
         }
         var item = items[i++];
         var fd = new FormData();
-        ["technicien", "montant", "date", "categorie", "note", "pending_receipt", "lat", "lng", "location_label"].forEach(function(k){
+        ["technicien", "montant", "date", "categorie", "note", "pending_receipt", "card_last4", "lat", "lng", "location_label"].forEach(function(k){
           if(item[k] !== undefined && item[k] !== null) fd.append(k, item[k]);
         });
         if(item.photoBlob){ fd.append("photo", item.photoBlob, "ticket.jpg"); }
@@ -368,6 +368,7 @@
     pendingBlob = null;
     keepExistingPhoto = !!t.photo_url;
     $("montantInput").value = t.montant;
+    $("cardLast4Input").value = t.card_last4 || "";
     $("dateInput").value = t.date;
     $("categorieInput").value = t.categorie;
     $("noteInput").value = t.note || "";
@@ -449,6 +450,9 @@
 
   $("montantInput").addEventListener("input", function(){ userTouchedMontant = true; });
   $("categorieInput").addEventListener("change", function(){ userTouchedCategorie = true; });
+  $("cardLast4Input").addEventListener("input", function(){
+    this.value = this.value.replace(/\D/g, "").slice(0, 4);
+  });
 
   // ---------- submit (création ou modification) ----------
   $("ticketForm").addEventListener("submit", function(e){
@@ -464,6 +468,12 @@
       showToast("Indiquez un montant valide");
       return;
     }
+    var cardLast4 = $("cardLast4Input").value.trim();
+    if(!/^\d{4}$/.test(cardLast4)){
+      showToast("Indiquez les 4 derniers chiffres de la carte bancaire utilisée");
+      $("cardLast4Input").focus();
+      return;
+    }
     var categorie = $("categorieInput").value;
     var date = $("dateInput").value;
     var note = $("noteInput").value.trim();
@@ -475,6 +485,7 @@
     fd.append("categorie", categorie);
     fd.append("note", note);
     fd.append("pending_receipt", pendingReceipt ? "1" : "0");
+    fd.append("card_last4", cardLast4);
     if(pendingBlob){
       fd.append("photo", pendingBlob, "ticket.jpg");
     }
@@ -492,7 +503,7 @@
     if(!isEdit && !navigator.onLine){
       queueOfflineTicket({
         technicien: techName, montant: montant, date: date, categorie: categorie, note: note,
-        pending_receipt: pendingReceipt ? "1" : "0",
+        pending_receipt: pendingReceipt ? "1" : "0", card_last4: cardLast4,
         lat: capturedLat, lng: capturedLng, location_label: capturedLabel
       }, pendingBlob).then(function(){
         $("captureDialog").close();
@@ -519,7 +530,7 @@
           // Échec réseau (pas juste une erreur applicative) : on bascule en file d'attente locale.
           queueOfflineTicket({
             technicien: techName, montant: montant, date: date, categorie: categorie, note: note,
-            pending_receipt: pendingReceipt ? "1" : "0",
+            pending_receipt: pendingReceipt ? "1" : "0", card_last4: cardLast4,
             lat: capturedLat, lng: capturedLng, location_label: capturedLabel
           }, pendingBlob).then(function(){
             $("captureDialog").close();
@@ -599,6 +610,9 @@
       '<span class="ticket-date mono">' + frDate(t.date) + '</span>';
     if(t.pending_receipt && !t.photo_url){
       top.innerHTML += '<span class="pending-badge">' + escapeHtml(t.categorie || "Justificatif") + ' en attente</span>';
+    }
+    if(t.card_last4){
+      top.innerHTML += '<span class="card-badge">💳 •••• ' + escapeHtml(t.card_last4) + '</span>';
     }
     main.appendChild(top);
     if(t.lat != null && t.lng != null){
@@ -683,6 +697,7 @@
     main.innerHTML =
       '<div class="ticket-top"><span class="ticket-cat">' + escapeHtml(item.categorie || "") + '</span>' +
       '<span class="ticket-date mono">' + frDate(item.date) + '</span>' +
+      (item.card_last4 ? '<span class="card-badge">💳 •••• ' + escapeHtml(item.card_last4) + '</span>' : '') +
       '<span class="sync-badge">⏳ En attente d\'envoi</span></div>';
     card.appendChild(main);
     var side = document.createElement("div");

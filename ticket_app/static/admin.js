@@ -43,7 +43,7 @@
   }
 
   function exportCsv(){
-    var headers = ["Technicien", "Date", "Catégorie", "Montant (EUR)", "Statut", "Note", "Motif admin", "Créé le"];
+    var headers = ["Technicien", "Date", "Catégorie", "Montant (EUR)", "Carte (4 derniers chiffres)", "Statut", "Note", "Motif admin", "Créé le"];
     var lines = [headers.map(csvEscape).join(";")];
     allTickets.forEach(function(t){
       lines.push([
@@ -51,6 +51,7 @@
         frDate(t.date),
         t.categorie,
         eur(t.montant || 0),
+        t.card_last4 || "",
         STATUS_LABEL[t.status] || t.status,
         t.note || "",
         t.admin_note || "",
@@ -151,6 +152,9 @@
     if(t.pending_receipt && !t.photo_url){
       top.innerHTML += '<span class="pending-badge">' + escapeHtml(t.categorie || "Justificatif") + ' en attente</span>';
     }
+    if(t.card_last4){
+      top.innerHTML += '<span class="card-badge">💳 •••• ' + escapeHtml(t.card_last4) + '</span>';
+    }
     main.appendChild(top);
     if(t.lat != null && t.lng != null){
       var locA = document.createElement("a");
@@ -229,6 +233,7 @@
     $("adminEditForm").reset();
     $("adminTechInput").value = t.technicien || "";
     $("adminMontantInput").value = t.montant;
+    $("adminCardLast4Input").value = t.card_last4 || "";
     $("adminDateInput").value = t.date;
     $("adminCategorieInput").value = t.categorie;
     $("adminNoteInput").value = t.note || "";
@@ -280,6 +285,10 @@
     });
   }
 
+  $("adminCardLast4Input").addEventListener("input", function(){
+    this.value = this.value.replace(/\D/g, "").slice(0, 4);
+  });
+
   $("adminPhotoInput").addEventListener("change", function(){
     var file = $("adminPhotoInput").files[0];
     if(!file) return;
@@ -306,6 +315,12 @@
     fd.append("categorie", $("adminCategorieInput").value);
     fd.append("note", $("adminNoteInput").value.trim());
     fd.append("pending_receipt", $("adminPendingReceiptInput").checked ? "1" : "0");
+    var adminCard = $("adminCardLast4Input").value.trim();
+    if(adminCard && !/^\d{4}$/.test(adminCard)){
+      showToast("Les 4 derniers chiffres de la carte doivent être 4 chiffres");
+      return;
+    }
+    fd.append("card_last4", adminCard);
     if(adminPendingBlob){
       fd.append("photo", adminPendingBlob, "ticket.jpg");
     }

@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -19,6 +20,7 @@ DB_PATH = os.path.join(BASE_DIR, "tickets.db")
 ALLOWED_EXT = {"jpg", "jpeg", "png", "webp"}
 MIME_BY_EXT = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
 EDITABLE_STATUSES = ("en_attente",)
+CARD_LAST4_RE = re.compile(r"^\d{4}$")
 
 # ---------------------------------------------------------------------------
 # Deux modes de stockage :
@@ -118,7 +120,8 @@ def init_db():
                 updated_at TEXT,
                 lat DOUBLE PRECISION,
                 lng DOUBLE PRECISION,
-                location_label TEXT
+                location_label TEXT,
+                card_last4 TEXT
             )
             """
         )
@@ -131,6 +134,7 @@ def init_db():
             "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION",
             "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION",
             "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS location_label TEXT",
+            "ALTER TABLE tickets ADD COLUMN IF NOT EXISTS card_last4 TEXT",
         ):
             try:
                 cur.execute(stmt)
@@ -156,7 +160,8 @@ def init_db():
                 updated_at TEXT,
                 lat REAL,
                 lng REAL,
-                location_label TEXT
+                location_label TEXT,
+                card_last4 TEXT
             )
             """
         )
@@ -171,6 +176,8 @@ def init_db():
             conn.execute("ALTER TABLE tickets ADD COLUMN lng REAL")
         if "location_label" not in existing_cols:
             conn.execute("ALTER TABLE tickets ADD COLUMN location_label TEXT")
+        if "card_last4" not in existing_cols:
+            conn.execute("ALTER TABLE tickets ADD COLUMN card_last4 TEXT")
         conn.commit()
     conn.close()
 
@@ -211,6 +218,7 @@ def row_to_dict(r):
         "lat": float(lat) if lat is not None else None,
         "lng": float(lng) if lng is not None else None,
         "location_label": r["location_label"] if "location_label" in r.keys() else None,
+        "card_last4": r["card_last4"] if "card_last4" in r.keys() else None,
     }
 
 
@@ -265,6 +273,7 @@ def create_ticket():
     lat = parse_coord(request.form.get("lat"))
     lng = parse_coord(request.form.get("lng"))
     location_label = (request.form.get("location_label") or "").strip() or None
+    card_last4 = (request.form.get("card_last4") or "").strip()
     photo = request.files.get("photo")
     has_photo = bool(photo and photo.filename)
 
@@ -272,6 +281,8 @@ def create_ticket():
         return jsonify({"error": "Champs manquants."}), 400
     if not has_photo and not pending_receipt:
         return jsonify({"error": "Ajoutez une photo, ou cochez « justificatif en attente »."}), 400
+    if not CARD_LAST4_RE.match(card_last4):
+        return jsonify({"error": "Indiquez les 4 derniers chiffres de la carte bancaire utilisée."}), 400
 
     try:
         montant = round(float(montant_raw), 2)
@@ -298,10 +309,10 @@ def create_ticket():
         cur.execute(
             "INSERT INTO tickets "
             "(id, technicien, montant, date, categorie, note, photo_data, photo_mime, "
-            "pending_receipt, status, created_at, lat, lng, location_label) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'en_attente', %s, %s, %s, %s)",
+            "pending_receipt, status, created_at, lat, lng, location_label, card_last4) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'en_attente', %s, %s, %s, %s, %s)",
             (ticket_id, technicien, montant, date, categorie, note,
-             photo_bytes, mime, pending_receipt, created_at, lat, lng, location_label),
+             photo_bytes, mime, pending_receipt, created_at, lat, lng, location_label, card_last4),
         )
         conn.commit()
         cur.close()
@@ -314,10 +325,10 @@ def create_ticket():
         conn.execute(
             "INSERT INTO tickets "
             "(id, technicien, montant, date, categorie, note, photo_filename, "
-            "pending_receipt, status, created_at, lat, lng, location_label) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'en_attente', ?, ?, ?, ?)",
+            "pending_receipt, status, created_at, lat, lng, location_label, card_last4) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'en_attente', ?, ?, ?, ?, ?)",
             (ticket_id, technicien, montant, date, categorie, note, filename,
-             1 if pending_receipt else 0, created_at, lat, lng, location_label),
+             1 if pending_receipt else 0, created_at, lat, lng, location_label, card_last4),
         )
         conn.commit()
     conn.close()
@@ -345,12 +356,16 @@ def update_my_ticket(ticket_id):
     categorie = request.form.get("categorie")
     note = (request.form.get("note") or "").strip()
     pending_receipt = parse_bool(request.form.get("pending_receipt"))
+    card_last4 = (request.form.get("card_last4") or "").strip()
     photo = request.files.get("photo")
     has_new_photo = bool(photo and photo.filename)
 
     if not montant_raw or not date or not categorie:
         conn.close()
         return jsonify({"error": "Champs manquants."}), 400
+    if not CARD_LAST4_RE.match(card_last4):
+        conn.close()
+        return jsonify({"error": "Indiquez les 4 derniers chiffres de la carte bancaire utilisée."}), 400
     try:
         montant = round(float(montant_raw), 2)
     except (TypeError, ValueError):
@@ -378,14 +393,14 @@ def update_my_ticket(ticket_id):
             photo_bytes = psycopg2.Binary(photo.read())
             cur.execute(
                 "UPDATE tickets SET montant=%s, date=%s, categorie=%s, note=%s, pending_receipt=%s, "
-                "photo_data=%s, photo_mime=%s, updated_at=%s WHERE id=%s",
-                (montant, date, categorie, note, pending_receipt, photo_bytes, mime, updated_at, ticket_id),
+                "photo_data=%s, photo_mime=%s, updated_at=%s, card_last4=%s WHERE id=%s",
+                (montant, date, categorie, note, pending_receipt, photo_bytes, mime, updated_at, card_last4, ticket_id),
             )
         else:
             cur.execute(
                 "UPDATE tickets SET montant=%s, date=%s, categorie=%s, note=%s, pending_receipt=%s, "
-                "updated_at=%s WHERE id=%s",
-                (montant, date, categorie, note, pending_receipt, updated_at, ticket_id),
+                "updated_at=%s, card_last4=%s WHERE id=%s",
+                (montant, date, categorie, note, pending_receipt, updated_at, card_last4, ticket_id),
             )
         conn.commit()
         cur.close()
@@ -397,8 +412,8 @@ def update_my_ticket(ticket_id):
             old_filename = row["photo_filename"]
             conn.execute(
                 "UPDATE tickets SET montant=?, date=?, categorie=?, note=?, pending_receipt=?, "
-                "photo_filename=?, updated_at=? WHERE id=?",
-                (montant, date, categorie, note, 1 if pending_receipt else 0, filename, updated_at, ticket_id),
+                "photo_filename=?, updated_at=?, card_last4=? WHERE id=?",
+                (montant, date, categorie, note, 1 if pending_receipt else 0, filename, updated_at, card_last4, ticket_id),
             )
             conn.commit()
             if old_filename:
@@ -409,8 +424,8 @@ def update_my_ticket(ticket_id):
         else:
             conn.execute(
                 "UPDATE tickets SET montant=?, date=?, categorie=?, note=?, pending_receipt=?, "
-                "updated_at=? WHERE id=?",
-                (montant, date, categorie, note, 1 if pending_receipt else 0, updated_at, ticket_id),
+                "updated_at=?, card_last4=? WHERE id=?",
+                (montant, date, categorie, note, 1 if pending_receipt else 0, updated_at, card_last4, ticket_id),
             )
             conn.commit()
     conn.close()
@@ -460,7 +475,7 @@ def list_my_tickets():
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             "SELECT id, technicien, montant, date, categorie, note, photo_data, "
-            "pending_receipt, status, admin_note, created_at, updated_at, lat, lng, location_label "
+            "pending_receipt, status, admin_note, created_at, updated_at, lat, lng, location_label, card_last4 "
             "FROM tickets WHERE lower(technicien) = lower(%s) ORDER BY created_at DESC",
             (technicien,),
         )
@@ -554,7 +569,7 @@ def list_all_tickets():
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             "SELECT id, technicien, montant, date, categorie, note, photo_data, "
-            "pending_receipt, status, admin_note, created_at, updated_at, lat, lng, location_label "
+            "pending_receipt, status, admin_note, created_at, updated_at, lat, lng, location_label, card_last4 "
             "FROM tickets ORDER BY created_at DESC"
         )
         rows = cur.fetchall()
@@ -609,12 +624,17 @@ def admin_update_ticket(ticket_id):
     note = row["note"] if note is None else note.strip()
     pending_raw = request.form.get("pending_receipt")
     pending_receipt = parse_bool(pending_raw) if pending_raw is not None else bool(row["pending_receipt"])
+    card_last4_raw = request.form.get("card_last4")
+    card_last4 = row["card_last4"] if card_last4_raw is None else (card_last4_raw.strip() or None)
     photo = request.files.get("photo")
     has_new_photo = bool(photo and photo.filename)
 
     if not technicien or not montant_raw or not date or not categorie:
         conn.close()
         return jsonify({"error": "Champs manquants."}), 400
+    if card_last4 and not CARD_LAST4_RE.match(card_last4):
+        conn.close()
+        return jsonify({"error": "Les 4 derniers chiffres de la carte doivent être 4 chiffres."}), 400
     try:
         montant = round(float(montant_raw), 2)
     except (TypeError, ValueError):
@@ -637,14 +657,14 @@ def admin_update_ticket(ticket_id):
             photo_bytes = psycopg2.Binary(photo.read())
             cur.execute(
                 "UPDATE tickets SET technicien=%s, montant=%s, date=%s, categorie=%s, note=%s, "
-                "pending_receipt=%s, photo_data=%s, photo_mime=%s, updated_at=%s WHERE id=%s",
-                (technicien, montant, date, categorie, note, pending_receipt, photo_bytes, mime, updated_at, ticket_id),
+                "pending_receipt=%s, photo_data=%s, photo_mime=%s, updated_at=%s, card_last4=%s WHERE id=%s",
+                (technicien, montant, date, categorie, note, pending_receipt, photo_bytes, mime, updated_at, card_last4, ticket_id),
             )
         else:
             cur.execute(
                 "UPDATE tickets SET technicien=%s, montant=%s, date=%s, categorie=%s, note=%s, "
-                "pending_receipt=%s, updated_at=%s WHERE id=%s",
-                (technicien, montant, date, categorie, note, pending_receipt, updated_at, ticket_id),
+                "pending_receipt=%s, updated_at=%s, card_last4=%s WHERE id=%s",
+                (technicien, montant, date, categorie, note, pending_receipt, updated_at, card_last4, ticket_id),
             )
         conn.commit()
         cur.close()
@@ -656,8 +676,8 @@ def admin_update_ticket(ticket_id):
             old_filename = row["photo_filename"]
             conn.execute(
                 "UPDATE tickets SET technicien=?, montant=?, date=?, categorie=?, note=?, "
-                "pending_receipt=?, photo_filename=?, updated_at=? WHERE id=?",
-                (technicien, montant, date, categorie, note, 1 if pending_receipt else 0, filename, updated_at, ticket_id),
+                "pending_receipt=?, photo_filename=?, updated_at=?, card_last4=? WHERE id=?",
+                (technicien, montant, date, categorie, note, 1 if pending_receipt else 0, filename, updated_at, card_last4, ticket_id),
             )
             conn.commit()
             if old_filename:
@@ -668,8 +688,8 @@ def admin_update_ticket(ticket_id):
         else:
             conn.execute(
                 "UPDATE tickets SET technicien=?, montant=?, date=?, categorie=?, note=?, "
-                "pending_receipt=?, updated_at=? WHERE id=?",
-                (technicien, montant, date, categorie, note, 1 if pending_receipt else 0, updated_at, ticket_id),
+                "pending_receipt=?, updated_at=?, card_last4=? WHERE id=?",
+                (technicien, montant, date, categorie, note, 1 if pending_receipt else 0, updated_at, card_last4, ticket_id),
             )
             conn.commit()
     conn.close()

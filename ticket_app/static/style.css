@@ -279,6 +279,12 @@ dialog::backdrop{background:rgba(20,12,11,.45); backdrop-filter:blur(6px); -webk
 }
 .location-badge:hover{border-color:var(--red);}
 
+.card-badge{
+  display:inline-flex; align-items:center; gap:4px; font-size:11px; font-weight:700; letter-spacing:.02em;
+  color:var(--text); background:var(--surface-alt); border:1px solid var(--border); border-radius:999px;
+  padding:3px 9px; white-space:nowrap; font-family:"IBM Plex Mono", monospace;
+}
+
 .view-toggle{display:flex; gap:6px; background:var(--surface-alt); border:1px solid var(--border); border-radius:12px; padding:4px; width:fit-content;}
 .view-toggle-btn{
   border:none; background:transparent; color:var(--text-muted); font-size:13px; font-weight:700;
