@@ -14,6 +14,59 @@
 
   $("lightbox").addEventListener("click", function(){ $("lightbox").close(); });
 
+  // ---------- réglages : thème + export ----------
+  document.querySelectorAll("[data-close]").forEach(function(b){
+    b.addEventListener("click", function(){ $(b.dataset.close).close(); });
+  });
+
+  function updateThemeUI(){
+    var theme = ttCurrentTheme();
+    $("themeToggleBtn").textContent = theme === "dark" ? "☀️" : "🌙";
+    $("themeLightBtn").classList.toggle("active", theme === "light");
+    $("themeDarkBtn").classList.toggle("active", theme === "dark");
+  }
+  $("themeToggleBtn").addEventListener("click", ttToggleTheme);
+  $("themeLightBtn").addEventListener("click", function(){ ttSetTheme("light"); });
+  $("themeDarkBtn").addEventListener("click", function(){ ttSetTheme("dark"); });
+  document.addEventListener("tt-theme-changed", updateThemeUI);
+  updateThemeUI();
+
+  $("settingsBtn").addEventListener("click", function(){ $("settingsDialog").showModal(); });
+
+  function csvEscape(v){
+    v = (v === undefined || v === null) ? "" : String(v);
+    if (/[;"\n]/.test(v)) { v = '"' + v.replace(/"/g, '""') + '"'; }
+    return v;
+  }
+
+  function exportCsv(){
+    var headers = ["Technicien", "Date", "Catégorie", "Montant (EUR)", "Statut", "Note", "Motif admin", "Créé le"];
+    var lines = [headers.map(csvEscape).join(";")];
+    allTickets.forEach(function(t){
+      lines.push([
+        t.technicien,
+        frDate(t.date),
+        t.categorie,
+        eur(t.montant || 0),
+        STATUS_LABEL[t.status] || t.status,
+        t.note || "",
+        t.admin_note || "",
+        t.created_at || ""
+      ].map(csvEscape).join(";"));
+    });
+    var csv = "﻿" + lines.join("\r\n");
+    var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "tickets-terrain-" + new Date().toISOString().slice(0, 10) + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  }
+  $("exportBtn").addEventListener("click", exportCsv);
+
   function eur(n){ return (Math.round(n*100)/100).toFixed(2).replace(".", ",") + " €"; }
   function frDate(iso){
     if(!iso) return "";

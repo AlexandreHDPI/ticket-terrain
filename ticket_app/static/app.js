@@ -3,6 +3,14 @@
   var pendingBlob = null;
   var myTickets = [];
 
+  // ---------- thème clair / sombre ----------
+  function updateThemeIcon(){
+    $("themeToggleBtn").textContent = ttCurrentTheme() === "dark" ? "☀️" : "🌙";
+  }
+  $("themeToggleBtn").addEventListener("click", ttToggleTheme);
+  document.addEventListener("tt-theme-changed", updateThemeIcon);
+  updateThemeIcon();
+
   function readLocal(key, fallback){
     try { return localStorage.getItem(key) || fallback; } catch(e){ return fallback; }
   }

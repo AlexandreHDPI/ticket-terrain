@@ -9,7 +9,7 @@
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark){
-  :root{
+  :root:not([data-theme="light"]){
     --bg:#1B1413; --surface:#241B19; --surface-alt:#2C211F;
     --text:#F5EDEB; --text-muted:#B8A6A2; --border:#3B2B28;
     --red:#E5484D; --red-dark:#F0716F; --red-ink:#1B1413; --red-soft:#3A2220;
@@ -20,6 +20,18 @@
     color-scheme: dark;
   }
 }
+/* Choix explicite de l'utilisateur (bouton clair/sombre), gagne dans les deux sens */
+:root[data-theme="dark"]{
+  --bg:#1B1413; --surface:#241B19; --surface-alt:#2C211F;
+  --text:#F5EDEB; --text-muted:#B8A6A2; --border:#3B2B28;
+  --red:#E5484D; --red-dark:#F0716F; --red-ink:#1B1413; --red-soft:#3A2220;
+  --ok:#63C296; --ok-bg:#1C2E24;
+  --warn:#E3AC46; --warn-bg:#332911;
+  --bad:#E2716A; --bad-bg:#3B211F;
+  --shadow:0 1px 2px rgba(0,0,0,.35), 0 10px 24px rgba(0,0,0,.4);
+  color-scheme: dark;
+}
+:root[data-theme="light"]{ color-scheme: light; }
 
 *{box-sizing:border-box;}
 html,body{margin:0; padding:0;}
@@ -51,6 +63,31 @@ a{color:var(--red);}
 
 .logout-link{font-size:13px; font-weight:600; color:var(--text-muted); text-decoration:none;}
 .logout-link:hover{color:var(--red);}
+
+.topbar-actions{display:flex; align-items:center; gap:14px;}
+.icon-btn{
+  border:1px solid var(--border); background:var(--surface); color:var(--text);
+  width:36px; height:36px; border-radius:10px; font-size:16px; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+}
+.icon-btn:hover{border-color:var(--red);}
+
+.settings-section{display:flex; flex-direction:column; gap:8px;}
+.settings-section h3{font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--text-muted); font-weight:700;}
+.theme-choice{display:flex; gap:8px;}
+.theme-btn{
+  flex:1; border:1px solid var(--border); background:var(--surface-alt); color:var(--text);
+  padding:10px; border-radius:10px; font-size:13.5px; font-weight:600; cursor:pointer;
+  display:flex; flex-direction:column; align-items:center; gap:4px;
+}
+.theme-btn .icon{font-size:18px;}
+.theme-btn.active{border-color:var(--red); background:var(--red-soft); color:var(--red);}
+.export-btn{
+  display:flex; align-items:center; justify-content:center; gap:8px;
+  width:100%; border:none; background:var(--red); color:var(--red-ink);
+  padding:11px; border-radius:10px; font-size:14px; font-weight:700; cursor:pointer;
+}
+.export-btn:hover{background:var(--red-dark);}
 
 .view{padding-top:20px; display:flex; flex-direction:column; gap:20px;}
 

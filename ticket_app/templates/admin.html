@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin — Tickets Terrain</title>
+<script src="{{ url_for('static', filename='theme.js') }}"></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
@@ -17,7 +18,11 @@
         <div class="sub">Vue admin</div>
       </div>
     </div>
-    <a class="logout-link" href="{{ url_for('admin_logout') }}">Se déconnecter</a>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="themeToggleBtn" type="button" aria-label="Changer le thème">🌙</button>
+      <button class="icon-btn" id="settingsBtn" type="button" aria-label="Réglages">⚙️</button>
+      <a class="logout-link" href="{{ url_for('admin_logout') }}">Se déconnecter</a>
+    </div>
   </header>
 
   <main class="view">
@@ -39,6 +44,26 @@
     </div>
   </main>
 </div>
+
+<dialog id="settingsDialog">
+  <div class="dialog-head">
+    <h2>Réglages</h2>
+    <button class="dialog-close" data-close="settingsDialog" aria-label="Fermer" type="button">&times;</button>
+  </div>
+  <div class="dialog-body">
+    <div class="settings-section">
+      <h3>Apparence</h3>
+      <div class="theme-choice">
+        <button class="theme-btn" id="themeLightBtn" type="button"><span class="icon">☀️</span>Clair</button>
+        <button class="theme-btn" id="themeDarkBtn" type="button"><span class="icon">🌙</span>Sombre</button>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h3>Données</h3>
+      <button class="export-btn" id="exportBtn" type="button"><span>⬇️</span> Exporter tous les tickets (CSV)</button>
+    </div>
+  </div>
+</dialog>
 
 <dialog id="lightbox">
   <img id="lightboxImg" src="" alt="Ticket agrandi">
