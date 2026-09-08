@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin — Tickets Terrain</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="login-shell">
+  <form class="login-card" method="post" action="{{ url_for('admin_login') }}">
+    <div class="brand">
+      <span class="brand-mark">HDPI</span>
+    </div>
+    <div>
+      <h1>Espace admin</h1>
+      <p class="tag">Tickets Terrain</p>
+    </div>
+
+    {% if error %}
+      <div class="notice error">{{ error }}</div>
+    {% endif %}
+
+    <div class="field">
+      <label for="username">Identifiant</label>
+      <input id="username" name="username" autocomplete="username" required>
+    </div>
+    <div class="field">
+      <label for="password">Mot de passe</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+
+    <button type="submit" class="btn primary">Se connecter</button>
+  </form>
+</div>
+</body>
+</html>

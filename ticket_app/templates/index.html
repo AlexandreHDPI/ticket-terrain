@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tickets Terrain — HDPI</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">HDPI</span>
+      <div>
+        <h1>Tickets Terrain</h1>
+        <div class="sub">Justificatifs de déplacement</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="view">
+    <div class="identity-row">
+      <label for="techName">Vous êtes</label>
+      <input id="techName" placeholder="Prénom Nom" autocomplete="off">
+    </div>
+
+    <button class="capture-cta" id="newTicketBtn"><span class="icon">📷</span> Nouveau ticket</button>
+
+    <div class="stat-grid" id="techSummary"></div>
+
+    <div>
+      <div class="section-title">Mes tickets</div>
+      <div class="ticket-list" id="techTicketList"></div>
+    </div>
+  </main>
+</div>
+
+<dialog id="captureDialog">
+  <div class="dialog-head">
+    <h2>Nouveau ticket</h2>
+    <button class="dialog-close" data-close="captureDialog" aria-label="Fermer" type="button">&times;</button>
+  </div>
+  <form class="dialog-body" id="ticketForm">
+    <label class="photo-picker" id="photoPicker" for="photoInput">
+      <span id="photoPickerContent"><span class="icon">📷</span><span>Prendre / choisir une photo du ticket</span></span>
+      <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none;">
+    </label>
+
+    <div class="field">
+      <label for="montantInput">Montant</label>
+      <div class="amount-field">
+        <input type="number" id="montantInput" inputmode="decimal" step="0.01" min="0" placeholder="0,00" required>
+        <span>€</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="dateInput">Date</label>
+      <input type="date" id="dateInput" required>
+    </div>
+
+    <div class="field">
+      <label for="categorieInput">Catégorie</label>
+      <select id="categorieInput" required>
+        <option value="Péage">Péage</option>
+        <option value="Essence">Essence</option>
+        <option value="Repas">Repas</option>
+        <option value="Parking">Parking</option>
+        <option value="Hébergement">Hébergement</option>
+        <option value="Autre">Autre</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="noteInput">Note (optionnel)</label>
+      <textarea id="noteInput" placeholder="Précision utile pour l'admin..."></textarea>
+    </div>
+
+    <div class="dialog-actions">
+      <button type="button" class="btn ghost" data-close="captureDialog">Annuler</button>
+      <button type="submit" class="btn primary" id="submitTicketBtn">Enregistrer</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="lightbox">
+  <img id="lightboxImg" src="" alt="Ticket agrandi">
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
