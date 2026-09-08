@@ -1,0 +1,22 @@
+name: Rappel du vendredi (Tickets Terrain)
+ 
+# Déclenche, plusieurs fois entre 6h et 8h UTC le vendredi (couvre 8h30
+# heure de Paris été comme hiver), un simple appel à l'application déjà en
+# ligne. C'est l'application elle-même qui décide si c'est vraiment le bon
+# moment d'envoyer le rappel (et qui évite tout doublon) — ce fichier ne
+# fait que "sonner à la porte" à intervalles réguliers, gratuitement, via
+# les tâches planifiées de GitHub Actions.
+on:
+  schedule:
+    - cron: "*/15 6-7 * * 5"
+  workflow_dispatch: {}
+ 
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Vérifie s'il faut envoyer le rappel push
+        run: |
+          curl -sf -X POST "https://hdpi-tickets-terrain.onrender.com/api/push/cron-trigger" \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}"
+ 
