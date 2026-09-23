@@ -1058,6 +1058,16 @@ def serve_photo(ticket_id):
 def admin_home():
     if not session.get("is_admin"):
         return redirect(url_for("admin_login"))
+    if session.get("admin_page_served"):
+        # La page /admin a déjà été servie pour cette connexion : un nouveau
+        # chargement (rafraîchissement, nouvel onglet, retour arrière...)
+        # doit redemander le mot de passe, même si le cookie de session est
+        # encore valide (il reste utilisable par les appels API de la page
+        # déjà ouverte, mais pas pour resservir la page elle-même).
+        session.pop("is_admin", None)
+        session.pop("admin_page_served", None)
+        return redirect(url_for("admin_login"))
+    session["admin_page_served"] = True
     return render_template("admin.html")
 
 
@@ -1073,6 +1083,7 @@ def admin_login():
             if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
                 _clear_login_failures()
                 session["is_admin"] = True
+                session.pop("admin_page_served", None)
                 return redirect(url_for("admin_home"))
             _register_login_failure()
             error = "Identifiant ou mot de passe incorrect."
@@ -1082,6 +1093,7 @@ def admin_login():
 @app.route("/admin/logout")
 def admin_logout():
     session.pop("is_admin", None)
+    session.pop("admin_page_served", None)
     return redirect(url_for("admin_login"))
 
 
